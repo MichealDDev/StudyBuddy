@@ -1,0 +1,137 @@
+/* style.css */
+
+/* Color variables */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+:root {
+  --primary-50: #EEF2FF;
+  --primary-500: #4F46E5;
+  --primary-600: #4338CA;
+  --primary-700: #3730A3;
+}
+/* Typography */
+* {
+  font-family: 'Inter', sans-serif;
+}
+/* Animations */
+.slide-enter {
+  transform: translateX(100%);
+  opacity: 0;
+}
+.slide-enter-active {
+  transform: translateX(0);
+  opacity: 1;
+  transition: all 0.3s ease-in-out;
+}
+
+.fade-in {
+  animation: fadeIn 0.5s ease-in-out;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Quiz card */
+.quiz-card {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+}
+
+/* Progress ring helpers */
+.progress-ring {
+  transform: rotate(-90deg);
+}
+
+/* Popover animation */
+.popover-enter {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+.popover-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: all .15s ease-out;
+}
+
+/* Custom scrollbar (WebKit) */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 2px;
+}
+
+/* Dark mode pragmatic overrides */
+html.dark body {
+  background-color: #0b1220;
+}
+html.dark #app {
+  background-color: #0f172a;
+  color: #e5e7eb;
+}
+
+/* Common surfaces in dark mode */
+html.dark .bg-white {
+  background-color: #111827 !important;
+}
+html.dark .bg-gray-50 {
+  background-color: #0b1220 !important;
+}
+html.dark .bg-gray-100 {
+  background-color: #0f172a !important;
+}
+html.dark .border-gray-200 {
+  border-color: #334155 !important;
+}
+
+/* Text colors */
+html.dark .text-gray-800 { color: #e5e7eb !important; }
+html.dark .text-gray-700 { color: #cbd5e1 !important; }
+html.dark .text-gray-600 { color: #94a3b8 !important; }
+html.dark .text-gray-500 { color: #64748b !important; }
+
+/* Hover tweaks */
+html.dark .hover\:bg-gray-50:hover {
+  background-color: #0b1220 !important;
+}
+
+/* Prose (rendered content) */
+.prose {
+  color: #1f2937;
+}
+.prose h1, .prose h2, .prose h3, .prose h4 {
+  color: #111827;
+  margin-top: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.prose p {
+  margin: 0.5rem 0;
+  line-height: 1.6;
+}
+.prose ul, .prose ol {
+  padding-left: 1.25rem;
+  margin: 0.5rem 0;
+}
+.prose code, .prose pre {
+  background: #f8fafc;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+}
+
+/* Prose dark */
+html.dark .prose { color: #e5e7eb; }
+html.dark .prose h1, html.dark .prose h2, html.dark .prose h3, html.dark .prose h4 {
+  color: #f3f4f6;
+}
+html.dark .prose code, html.dark .prose pre {
+  background: #0b1220;
+}
+
+/* Utility: smooth transitions for theme toggles */
+#app, .view-content, .prose, header, nav, .bg-white, .bg-gray-50, .bg-gray-100 {
+  transition: background-color .2s ease, color .2s ease, border-color .2s ease;
+}

@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Study Buddy - Your AI Study Companion</title>
+
+    <!-- PWA Meta -->
+    <meta name="theme-color" content="#4F46E5" />
+    <meta name="description" content="AI-powered study management and organization tool" />
+    <link
+      rel="manifest"
+      href="data:application/json;base64,eyJuYW1lIjoiU3R1ZHkgQnVkZHkiLCJzaG9ydF9uYW1lIjoiU3R1ZHlCdWRkeSIsImRlc2NyaXB0aW9uIjoiQUktcG93ZXJlZCBzdHVkeSBtYW5hZ2VtZW50IHRvb2wiLCJzdGFydF91cmwiOiIvIiwiZGlzcGxheSI6InN0YW5kYWxvbmUiLCJ0aGVtZV9jb2xvciI6IiM0RjQ2RTUiLCJiYWNrZ3JvdW5kX2NvbG9yIjoiIzFFMUUyRSIsImljb25zIjpbeyJzcmMiOiJkYXRhOmltYWdlL3N2Zyt4bWw7YmFzZTY0LFBITjJaeUIzYVdSMGFEMGlORFZoSWlCb1pXbG5hSFE5SWpRMWFpSWdkbWxsZDBKdmVEMGlNQ0F3SURRMUlEUTFJaUJtYVd4c1BTSWpORVkwTmtVMUlpQjRiV3h1Y3owOGMzWm5QRUZ5WVc1bmNXZHpiQzVsYjI0emNXcEVVbHBpZFhSa09HNTBPRUF6ZDBSeU1uWjJaMk5oZDNwSWNHUkZieUF1TG1rQ0RTbzlNa1l1Ym1aeVhRRTBheFZEZ3dVZnNSeE1DST0iLCJzaXplcyI6IjUxMng1MTIiLCJ0eXBlIjoiaW1hZ2Uvc3ZnK3htbCJ9XX0="
+    />
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <linkty
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- App Styles (will be provided separately) -->
+    <!-- Main application stylesheet -->
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  
+  
+  <body class="bg-gray-50 min-h-screen">
+    <div id="app" class="max-w-md mx-auto bg-white min-h-screen shadow-lg">
+      <!-- Header -->
+      <header id="header" class="relative bg-gradient-to-r from-primary-500 to-primary-600 text-white p-4 shadow-md">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center space-x-3">
+            <button id="back-btn" class="hidden p-2 hover:bg-white/10 rounded-lg transition-colors">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+            <div>
+              <h1 id="header-title" class="text-xl font-bold">Study Buddy</h1>
+              <p id="header-subtitle" class="text-primary-100 text-sm opacity-90"></p>
+            </div>
+          </div>
+          <button id="menu-btn" class="p-2 hover:bg-white/10 rounded-lg transition-colors" aria-haspopup="true" aria-expanded="false">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+            </svg>
+          </button>
+          <!-- Header Menu -->
+          <div id="header-menu" class="hidden absolute right-4 top-14 w-48 bg-white text-gray-800 rounded-lg shadow-lg border border-gray-200 overflow-hidden z-50">
+            <button class="w-full text-left px-4 py-2 hover:bg-gray-50 flex items-center space-x-2" data-menu-action="settings">
+              <span>⚙️</span><span>Settings</span>
+            </button>
+            <button class="w-full text-left px-4 py-2 hover:bg-gray-50 flex items-center space-x-2" data-menu-action="prompts">
+              <span>📋</span><span>Prompts Library</span>
+            </button>
+            <button class="w-full text-left px-4 py-2 hover:bg-gray-50 flex items-center space-x-2" data-menu-action="export">
+              <span>📤</span><span>Export Data</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Main Content -->
+      <main id="main-content" class="pb-20">
+        <!-- Dashboard View -->
+        <section id="dashboard-view" class="view-content">
+          <div class="bg-gradient-to-r from-primary-50 to-blue-50 p-6 m-4 rounded-xl">
+            <h2 class="text-lg font-semibold text-gray-800 mb-2">Welcome back! 👋</h2>
+            <p class="text-gray-600 text-sm mb-4">Ready to continue your learning journey?</p>
+            <div class="grid grid-cols-2 gap-4">
+              <div class="bg-white p-3 rounded-lg shadow-sm border border-gray-200">
+                <p class="text-2xl font-bold text-primary-600" id="total-courses">0</p>
+                <p class="text-xs text-gray-500">Courses</p>
+              </div>
+              <div class="bg-white p-3 rounded-lg shadow-sm border border-gray-200">
+                <p class="text-2xl font-bold text-green-600" id="study-streak">0</p>
+                <p class="text-xs text-gray-500">Day Streak</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Actions -->
+          <div class="p-4">
+            <h3 class="font-semibold text-gray-800 mb-3">Quick Actions</h3>
+            <div class="grid grid-cols-2 gap-3">
+              <button onclick="showView('courses')" class="bg-primary-500 text-white p-4 rounded-xl text-center hover:bg-primary-600 transition-colors">
+                <svg class="w-8 h-8 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                </svg>
+                <span class="text-sm font-medium">My Courses</span>
+              </button>
+              <button onclick="showView('prompts')" class="bg-green-500 text-white p-4 rounded-xl text-center hover:bg-green-600 transition-colors">
+                <svg class="w-8 h-8 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span class="text-sm font-medium">Get Prompts</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Recent Activity -->
+          <div class="p-4">
+            <h3 class="font-semibold text-gray-800 mb-3">Recent Activity</h3>
+            <div id="recent-activity" class="space-y-3">
+              <div class="bg-gray-100 p-4 rounded-lg text-center text-gray-500">
+                <p class="text-sm">No recent activity</p>
+                <p class="text-xs mt-1">Start by creating a course!</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Courses View -->
+        <section id="courses-view" class="view-content hidden">
+          <div class="p-4">
+            <div class="flex items-center justify-between mb-6">
+              <h2 class="text-xl font-bold text-gray-800">My Courses</h2>
+              <button id="add-course-btn" class="bg-primary-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary-600 transition-colors">
+                + Add Course
+              </button>
+            </div>
+            <div id="courses-list" class="space-y-4"></div>
+          </div>
+        </section>
+
+        <!-- Course Detail View -->
+        <section id="course-detail-view" class="view-content hidden">
+          <div class="p-4">
+            <div id="course-structure-section" class="mb-6">
+              <div id="structure-prompt-card" class="bg-yellow-50 border border-yellow-200 p-4 rounded-lg mb-4">
+                <h3 class="font-semibold text-gray-800 mb-2">📋 Start with Course Structure</h3>
+                <p class="text-sm text-gray-600 mb-3">First, get the structure prompt to analyze your course content with AI.</p>
+                <button id="get-structure-prompt-btn" class="bg-yellow-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-yellow-600 transition-colors">
+                  Get Structure Prompt
+                </button>
+              </div>
+
+              <div id="paste-structure-card" class="bg-blue-50 border border-blue-200 p-4 rounded-lg" style="display: none;">
+                <h3 class="font-semibold text-gray-800 mb-2">📥 Paste AI Response</h3>
+                <p class="text-sm text-gray-600 mb-3">Paste the AI's structured response to automatically create your course topics.</p>
+                <textarea id="structure-response" class="w-full p-3 border rounded-lg text-sm bg-white" rows="6" placeholder="Paste the AI response here..."></textarea>
+                <button id="parse-structure-btn" class="mt-3 bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-600 transition-colors">
+                  Create Course Structure
+                </button>
+              </div>
+            </div>
+
+            <div id="topics-section" class="hidden">
+              <h3 class="font-semibold text-gray-800 mb-4">📚 Course Topics</h3>
+              <div id="topics-list" class="space-y-3"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Topic Detail View -->
+        <section id="topic-detail-view" class="view-content hidden">
+          <div class="p-4">
+            <div id="topic-header" class="mb-6">
+              <h2 id="topic-title" class="text-xl font-bold text-gray-800 mb-2"></h2>
+              <div class="flex items-center space-x-4 text-sm text-gray-600">
+                <span id="topic-difficulty" class="px-2 py-1 bg-gray-100 rounded-full"></span>
+                <span id="topic-progress">0/7 completed</span>
+              </div>
+            </div>
+            <div id="content-slots" class="space-y-3"></div>
+          </div>
+        </section>
+
+        <!-- Content View -->
+        <section id="content-view" class="view-content hidden">
+          <div class="p-4">
+            <div id="content-header" class="mb-4">
+              <h2 id="content-title" class="text-lg font-bold text-gray-800"></h2>
+              <p id="content-topic" class="text-sm text-gray-600"></p>
+            </div>
+
+            <div id="content-actions" class="mb-6 space-y-3">
+              <button id="get-content-prompt-btn" class="w-full bg-primary-500 text-white p-3 rounded-lg font-medium hover:bg-primary-600 transition-colors">
+                📋 Get Prompt for this Content
+              </button>
+
+              <div id="paste-content-section" class="bg-gray-50 p-4 rounded-lg" style="display: none;">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Paste AI Response:</label>
+                <textarea id="content-response" class="w-full p-3 border rounded-lg text-sm bg-white" rows="8" placeholder="Paste the AI response here..."></textarea>
+                <div class="mt-3 flex space-x-2">
+                  <button id="save-content-btn" class="flex-1 bg-green-500 text-white p-2 rounded-lg text-sm font-medium hover:bg-green-600 transition-colors">Save Content</button>
+                  <button id="cancel-content-btn" class="px-4 bg-gray-300 text-gray-700 p-2 rounded-lg text-sm font-medium hover:bg-gray-400 transition-colors">Cancel</button>
+                </div>
+              </div>
+            </div>
+
+            <div id="content-display" class="hidden">
+              <div class="flex justify-between items-center mb-4">
+                <h3 class="font-semibold text-gray-800">Content</h3>
+                <div class="space-x-2">
+                  <button id="edit-content-btn" class="text-blue-500 text-sm hover:text-blue-600">Edit</button>
+                  <button id="delete-content-btn" class="text-red-500 text-sm hover:text-red-600">Delete</button>
+                </div>
+              </div>
+              <div id="parsed-content" class="prose prose-sm max-w-none"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Quiz View -->
+        <section id="quiz-view" class="view-content hidden">
+          <div class="p-4">
+            <div id="quiz-header" class="mb-6">
+              <div class="flex items-center justify-between mb-4">
+                <h2 id="quiz-title" class="text-lg font-bold text-gray-800"></h2>
+                <div id="quiz-timer" class="text-sm text-gray-600">⏱️ 00:00</div>
+              </div>
+              <div class="bg-gray-200 rounded-full h-2 mb-2">
+                <div id="quiz-progress-bar" class="bg-primary-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+              </div>
+              <div class="flex justify-between text-sm text-gray-600">
+                <span id="quiz-question-number">Question 1 of 10</span>
+                <span id="quiz-score">Score: 0/0</span>
+              </div>
+            </div>
+
+            <div id="quiz-content" class="quiz-card bg-white p-6 rounded-xl mb-6">
+              <div id="quiz-question" class="mb-6">
+                <p id="question-text" class="text-gray-800 font-medium mb-4"></p>
+                <div id="question-options" class="space-y-3"></div>
+              </div>
+            </div>
+
+            <div id="quiz-controls" class="flex space-x-3">
+              <button id="quiz-prev-btn" class="flex-1 bg-gray-300 text-gray-700 p-3 rounded-lg font-medium hover:bg-gray-400 transition-colors disabled:opacity-50">Previous</button>
+              <button id="quiz-submit-btn" class="flex-1 bg-primary-500 text-white p-3 rounded-lg font-medium hover:bg-primary-600 transition-colors">Submit Answer</button>
+              <button id="quiz-next-btn" class="flex-1 bg-primary-500 text-white p-3 rounded-lg font-medium hover:bg-primary-600 transition-colors" style="display: none;">Next</button>
+            </div>
+
+            <div id="quiz-results" class="hidden mt-6 p-6 bg-gradient-to-r from-green-50 to-blue-50 rounded-xl">
+              <h3 class="text-lg font-bold text-gray-800 mb-2">Quiz Complete! 🎉</h3>
+              <div id="final-score" class="text-2xl font-bold text-green-600 mb-2"></div>
+              <div id="score-breakdown" class="text-sm text-gray-600 mb-4"></div>
+              <button id="retake-quiz-btn" class="bg-primary-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary-600 transition-colors mr-2">Retake Quiz</button>
+              <button id="quiz-review-btn" class="bg-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-400 transition-colors">Review Answers</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Study View -->
+        <section id="study-view" class="view-content hidden">
+          <div class="p-4">
+            <h2 class="text-xl font-bold text-gray-800 mb-4">Study</h2>
+            <div id="study-overview" class="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+              <p class="text-sm text-gray-600">Personalized queue based on your progress. Start with the first item.</p>
+            </div>
+            <div id="study-queue" class="space-y-3">
+              <div class="bg-gray-100 p-4 rounded-lg text-center text-gray-500">
+                <p class="text-sm">No items in your queue yet.</p>
+                <p class="text-xs mt-1">Add courses and generate content to begin.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Prompts View -->
+        <section id="prompts-view" class="view-content hidden">
+          <div class="p-4">
+            <h2 class="text-xl font-bold text-gray-800 mb-6">AI Prompts Library</h2>
+
+            <div class="mb-6">
+              <h3 class="font-semibold text-gray-800 mb-3">🏗️ Structure Prompts</h3>
+              <div class="bg-yellow-50 border border-yellow-200 p-4 rounded-lg">
+                <h4 class="font-medium text-gray-800 mb-2">Course Structure Analyzer</h4>
+                <p class="text-sm text-gray-600 mb-3">Analyzes course content and creates topic structure</p>
+                <button onclick="copyPrompt('structure')" class="bg-yellow-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-yellow-600 transition-colors">Copy Prompt</button>
+              </div>
+            </div>
+
+            <div>
+              <h3 class="font-semibold text-gray-800 mb-3">📝 Content Prompts (JSON-hybrid)</h3>
+              <div class="space-y-3">
+                <div class="bg-blue-50 border border-blue-200 p-4 rounded-lg">
+                  <h4 class="font-medium text-gray-800 mb-1">Reading Content (Summary/Explainer/Review)</h4>
+                  <p class="text-xs text-gray-600 mb-2">Generates structured reading with micro-checks + citations</p>
+                  <button onclick="copyPrompt('reading')" class="bg-blue-500 text-white px-3 py-1.5 rounded text-xs font-medium hover:bg-blue-600 transition-colors">Copy</button>
+                </div>
+                <div class="bg-green-50 border border-green-200 p-4 rounded-lg">
+                  <h4 class="font-medium text-gray-800 mb-1">Flashcard Generator (JSON)</h4>
+                  <p class="text-xs text-gray-600 mb-2">Generates SRS-ready flashcards</p>
+                  <button onclick="copyPrompt('flashcards')" class="bg-green-500 text-white px-3 py-1.5 rounded text-xs font-medium hover:bg-green-600 transition-colors">Copy</button>
+                </div>
+                <div class="bg-purple-50 border border-purple-200 p-4 rounded-lg">
+                  <h4 class="font-medium text-gray-800 mb-1">Quiz Generator (MCQ-only JSON)</h4>
+                  <p class="text-xs text-gray-600 mb-2">Creates a 10-item MCQ quiz with feedback + citations</p>
+                  <button onclick="copyPrompt('quiz')" class="bg-purple-500 text-white px-3 py-1.5 rounded text-xs font-medium hover:bg-purple-600 transition-colors">Copy</button>
+                </div>
+                <div class="bg-orange-50 border border-orange-200 p-4 rounded-lg">
+                  <h4 class="font-medium text-gray-800 mb-1">Concept Explainer (use Reading Content)</h4>
+                  <p class="text-xs text-gray-600 mb-2">Use Reading Content prompt for explainers</p>
+                  <button onclick="copyPrompt('explainer')" class="bg-orange-500 text-white px-3 py-1.5 rounded text-xs font-medium hover:bg-orange-600 transition-colors">Copy</button>
+                </div>
+                <div class="bg-red-50 border border-red-200 p-4 rounded-lg">
+                  <h4 class="font-medium text-gray-800 mb-1">Practice Problems (use Reading or Flashcards)</h4>
+                  <p class="text-xs text-gray-600 mb-2">Use Reading for embedded checks or Flashcards for drill</p>
+                  <button onclick="copyPrompt('practice')" class="bg-red-500 text-white px-3 py-1.5 rounded text-xs font-medium hover:bg-red-600 transition-colors">Copy</button>
+                </div>
+                <div class="bg-indigo-50 border border-indigo-200 p-4 rounded-lg">
+                  <h4 class="font-medium text-gray-800 mb-1">Topic Review (use Reading Content)</h4>
+                  <p class="text-xs text-gray-600 mb-2">Comprehensive review via Reading Content prompt</p>
+                  <button onclick="copyPrompt('review')" class="bg-indigo-500 text-white px-3 py-1.5 rounded text-xs font-medium hover:bg-indigo-600 transition-colors">Copy</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Settings View -->
+        <section id="settings-view" class="view-content hidden">
+          <div class="p-4">
+            <h2 class="text-xl font-bold text-gray-800 mb-6">Settings</h2>
+
+            <div class="space-y-6">
+              <div>
+                <h3 class="font-semibold text-gray-800 mb-3">📱 App Settings</h3>
+                <div class="space-y-3">
+                  <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                    <span class="text-gray-700">Dark Mode</span>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                      <input type="checkbox" class="sr-only peer" id="dark-mode-toggle" />
+                      <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-600"></div>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h3 class="font-semibold text-gray-800 mb-3">💾 Data Management</h3>
+                <div class="space-y-3">
+                  <button id="export-data-btn" class="w-full bg-green-500 text-white p-3 rounded-lg text-left font-medium hover:bg-green-600 transition-colors">📤 Export All Data</button>
+                  <button id="import-data-btn" class="w-full bg-blue-500 text-white p-3 rounded-lg text-left font-medium hover:bg-blue-600 transition-colors">📥 Import Data</button>
+                  <input type="file" id="import-file-input" accept=".json" class="hidden" />
+                </div>
+              </div>
+
+              <div>
+                <h3 class="font-semibold text-gray-800 mb-3">⚠️ Danger Zone</h3>
+                <button id="clear-all-data-btn" class="w-full bg-red-500 text-white p-3 rounded-lg text-left font-medium hover:bg-red-600 transition-colors">🗑️ Clear All Data</button>
+              </div>
+
+              <div>
+                <h3 class="font-semibold text-gray-800 mb-3">ℹ️ About</h3>
+                <div class="p-3 bg-gray-50 rounded-lg text-sm text-gray-600">
+                  <p class="mb-2"><strong>Study Buddy v1.1</strong></p>
+                  <p class="mb-2">Your AI-powered study companion</p>
+                  <p class="text-xs">Built with ❤️ for effective learning</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <!-- Bottom Navigation -->
+      <nav class="fixed bottom-0 left-1/2 transform -translate-x-1/2 w-full max-w-md bg-white border-t border-gray-200">
+        <div class="flex justify-around py-2">
+          <button onclick="showView('dashboard')" class="nav-btn flex flex-col items-center py-2 px-4 text-primary-500">
+            <svg class="w-6 h-6 mb-1" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />
+            </svg>
+            <span class="text-xs">Home</span>
+          </button>
+
+          <button onclick="showView('courses')" class="nav-btn flex flex-col items-center py-2 px-4 text-gray-400 hover:text-primary-500">
+            <svg class="w-6 h-6 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+            </svg>
+            <span class="text-xs">Courses</span>
+          </button>
+
+          <button onclick="showView('study')" class="nav-btn flex flex-col items-center py-2 px-4 text-gray-400 hover:text-primary-500">
+            <svg class="w-6 h-6 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+            <span class="text-xs">Study</span>
+          </button>
+
+          <button onclick="showView('prompts')" class="nav-btn flex flex-col items-center py-2 px-4 text-gray-400 hover:text-primary-500">
+            <svg class="w-6 h-6 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            <span class="text-xs">Prompts</span>
+          </button>
+
+          <button onclick="showView('settings')" class="nav-btn flex flex-col items-center py-2 px-4 text-gray-400 hover:text-primary-500">
+            <svg class="w-6 h-6 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            <span class="text-xs">Settings</span>
+          </button>
+        </div>
+      </nav>
+
+      <!-- Modals -->
+      <!-- Add Course Modal -->
+      <div id="add-course-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden">
+        <div class="flex items-end justify-center min-h-screen px-4 pb-4">
+          <div class="bg-white rounded-t-xl w-full max-w-md p-6 transform translate-y-0">
+            <h3 class="text-lg font-bold text-gray-800 mb-4">Create New Course</h3>
+            <form id="add-course-form">
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Course Name</label>
+                <input type="text" id="course-name" class="w-full p-3 border rounded-lg bg-white" placeholder="e.g., Biology 101" required />
+              </div>
+              <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Description (Optional)</label>
+                <textarea id="course-description" class="w-full p-3 border rounded-lg bg-white" rows="3" placeholder="Brief description of the course"></textarea>
+              </div>
+              <div class="flex space-x-3">
+                <button type="button" id="cancel-course-btn" class="flex-1 bg-gray-300 text-gray-700 p-3 rounded-lg font-medium hover:bg-gray-400 transition-colors">Cancel</button>
+                <button type="submit" class="flex-1 bg-primary-500 text-white p-3 rounded-lg font-medium hover:bg-primary-600 transition-colors">Create Course</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <!-- Prompt Display Modal -->
+      <div id="prompt-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden">
+        <div class="flex items-center justify-center min-h-screen px-4">
+          <div class="bg-white rounded-xl w-full max-w-md max-h-[80vh] flex flex-col">
+            <div class="p-4 border-b border-gray-200 flex items-center justify-between">
+              <h3 id="prompt-modal-title" class="text-lg font-bold text-gray-800"></h3>
+              <button id="close-prompt-modal" class="text-gray-500 hover:text-gray-700">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div class="p-4 flex-1 overflow-y-auto">
+              <textarea id="prompt-text" class="w-full h-64 p-3 border rounded-lg text-sm font-mono bg-white" readonly></textarea>
+            </div>
+            <div class="p-4 border-t border-gray-200">
+              <button id="copy-prompt-btn" class="w-full bg-primary-500 text-white p-3 rounded-lg font-medium hover:bg-primary-600 transition-colors">📋 Copy to Clipboard</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Toast Notifications -->
+      <div id="toast-container" class="fixed top-4 right-4 z-50 space-y-2"></div>
+    </div>
+
+    <!-- Main application script -->
+    <script src="app.js"></script>
+  </body>
+</html>
