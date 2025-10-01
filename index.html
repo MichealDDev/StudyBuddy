@@ -19,6 +19,20 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
+    <!-- Tailwind CDN (with plugins) -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,typography,aspect-ratio,line-clamp"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        colors: {
+          primary: { 50: '#EEF2FF', 500: '#4F46E5', 600: '#4338CA', 700: '#3730A3' }
+        }
+      }
+    }
+  }
+</script>
 
     <!-- App Styles (will be provided separately) -->
     <!-- Main application stylesheet -->
