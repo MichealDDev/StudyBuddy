@@ -132,6 +132,14 @@ class StudyBuddyApp {
         this.showToast(`Dark mode ${enabled ? 'enabled' : 'disabled'}`, 'success');
       });
     }
+    // Flashcards "Study now" (event delegation)
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-start-flashcards]');
+  if (!btn) return;
+  const topicId = btn.getAttribute('data-topic-id') || this.data.currentTopic?.id;
+  this.openFlashcardsStudy(topicId);
+});
+
 
     // Quiz
     this.setupQuizEventListeners();
@@ -440,12 +448,21 @@ class StudyBuddyApp {
     }
   }
 
-  showStructurePrompt() {
-    document.getElementById('structure-prompt-card').style.display = 'none';
-    document.getElementById('paste-structure-card').style.display = 'block';
-    this.showPromptModal('Course Structure Analyzer', this.getStructurePrompt());
-  }
+ showStructurePrompt() {
+  // Toggle cards
+  const promptCard = document.getElementById('structure-prompt-card');
+  const pasteCard  = document.getElementById('paste-structure-card');
+  if (promptCard) promptCard.style.display = 'none';
+  if (pasteCard)  pasteCard.style.display  = 'block';
 
+  // Build and show modal
+  const prompt = this.getStructurePrompt();
+  if (!prompt) {
+    this.showToast('Unable to build the Structure Prompt', 'error');
+    return;
+  }
+  this.showPromptModal('Course Structure Analyzer', prompt);
+}
   parseStructureResponse() {
     const response = document.getElementById('structure-response').value.trim();
     if (!response) {
@@ -718,61 +735,58 @@ class StudyBuddyApp {
   }
 
   parseContentResponse(response, type) {
-    const json = extractJsonFromText(response);
+  const maybeJson = extractJsonFromText(response);
 
-    if (type === 'quiz') {
-      if (json && (json.schema_version === 'quiz_mcq_v1' || json.items)) {
-        const questions = (json.items || []).map((item, index) => {
-          const options = item.options || [];
-          const correctIdx = options.findIndex(o => o.isCorrect);
-          const fb = {};
-          options.forEach((o, i) => fb[i] = o.feedback || '');
-          return {
-            id: item.id || index + 1,
-            text: item.stem || item.text || '',
-            type: 'multiple_choice',
-            difficulty: item.difficulty || 'medium',
-            options: options.map(o => o.text),
-            correctAnswer: correctIdx >= 0 ? correctIdx : null,
-            feedback: fb,
-            citation_ids: item.citation_ids || []
-          };
-        }).filter(q => q.options?.length === 4 && q.correctAnswer !== null);
-        return { questions, totalQuestions: questions.length, schema_version: 'quiz_mcq_v1' };
-      }
-      // Fallback to legacy markers
-      return this.parseQuizLegacy(response);
+  if (type === 'flashcards') {
+    if (maybeJson && (maybeJson.schema_version === 'flashcards_v1' || Array.isArray(maybeJson.cards))) {
+      const cards = (maybeJson.cards || []).map((c, i) => ({
+        id: c.id || 'c' + (i + 1),
+        front: c.front || '',
+        back: c.back || '',
+        tags: c.tags || [],
+        citation_ids: c.citation_ids || []
+      }));
+      return { cards, totalCards: cards.length, schema_version: 'flashcards_v1' };
     }
-
-    if (type === 'flashcards') {
-      if (json && (json.schema_version === 'flashcards_v1' || json.cards)) {
-        const cards = (json.cards || []).map((c, i) => ({
-          id: c.id || 'c' + (i + 1),
-          front: c.front || '',
-          back: c.back || '',
-          tags: c.tags || [],
-          citation_ids: c.citation_ids || []
-        }));
-        return { cards, totalCards: cards.length, schema_version: 'flashcards_v1' };
-      }
-      // Fallback legacy
-      return this.parseFlashcardsLegacy(response);
-    }
-
-    // Reading content types (summary/explainer/review/practice): hybrid
-    if (json && (json.schema_version === 'reading_content_v1' || json.sections || json.rendered_markdown)) {
-      return {
-        schema_version: 'reading_content_v1',
-        title: json.title || '',
-        rendered_markdown: json.rendered_markdown || '',
-        sections: json.sections || [],
-        confidence: json.confidence || null
-      };
-    }
-
-    // Generic fallback
-    return this.parseGenericLegacy(response);
+    return { error: 'Flashcards must be valid JSON (flashcards_v1). Please paste only the JSON code block.' };
   }
+
+  if (type === 'quiz') {
+    if (maybeJson && (maybeJson.schema_version === 'quiz_mcq_v1' || Array.isArray(maybeJson.items))) {
+      const questions = (maybeJson.items || []).map((item, index) => {
+        const options = item.options || [];
+        const correctIdx = options.findIndex(o => o.isCorrect === true);
+        const fb = {};
+        options.forEach((o, i) => fb[i] = o.feedback || '');
+        return {
+          id: item.id || index + 1,
+          text: item.stem || item.text || '',
+          type: 'multiple_choice',
+          difficulty: item.difficulty || 'medium',
+          options: options.map(o => o.text),
+          correctAnswer: correctIdx >= 0 ? correctIdx : null,
+          feedback: fb,
+          citation_ids: item.citation_ids || []
+        };
+      }).filter(q => q.options?.length === 4 && q.correctAnswer !== null);
+      if (questions.length === 0) return { error: 'Quiz JSON parsed but no valid items found. Ensure 4 options with one isCorrect=true and feedback.' };
+      return { questions, totalQuestions: questions.length, schema_version: 'quiz_mcq_v1' };
+    }
+    return { error: 'Quiz must be valid JSON (quiz_mcq_v1). Please paste only the JSON code block.' };
+  }
+
+  // Reading types → Markdown only (no JSON allowed)
+  if (maybeJson) {
+    return { error: 'Reading content must be plain Markdown (no JSON). Please regenerate and paste Markdown only.' };
+  }
+  const md = response.trim();
+  if (!md) return { error: 'Empty content. Paste Markdown only.' };
+  // quick sanity: ensure at least one heading
+  if (!/^#+\s/m.test(md)) {
+    return { error: 'Markdown must include headings (##, ###). Please format with headings and sections.' };
+  }
+  return { schema_version: 'md_v1', markdown: md };
+}
 
   saveContent() {
     const response = document.getElementById('content-response').value.trim();
@@ -828,81 +842,84 @@ class StudyBuddyApp {
     document.getElementById('paste-content-section').style.display = 'none';
   }
 
-  displayParsedContent(content, type) {
-    const container = document.getElementById('parsed-content');
-    if (!container) return;
+displayParsedContent(content, type) {
+  const container = document.getElementById('parsed-content');
+  if (!container) return;
 
-    if (content && (content.schema_version === 'reading_content_v1' || content.sections || content.rendered_markdown)) {
-      if (content.rendered_markdown) {
-        container.innerHTML = `<div class="whitespace-pre-wrap text-gray-800">${content.rendered_markdown}</div>`;
-        return;
-      }
-      if (content.sections?.length) {
-        container.innerHTML = content.sections.map(sec => `
-          <div class="mb-6">
-            <h3 class="font-semibold text-gray-800 mb-2">${sec.title || ''}</h3>
-            <div class="text-gray-700 whitespace-pre-wrap">${(sec.body_markdown || '').trim()}</div>
-          </div>
-        `).join('');
-        return;
-      }
-    }
-
-    if (type === 'quiz' && content?.questions) {
-      container.innerHTML = `
-        <div class="bg-purple-50 p-4 rounded-lg mb-4">
-          <h3 class="font-semibold text-purple-800 mb-2">Quiz Overview</h3>
-          <p class="text-sm text-purple-600">Total Questions: ${content.totalQuestions || content.questions.length}</p>
-        </div>
-        <div class="space-y-3">
-          ${content.questions.slice(0, 3).map((q, i) => `
-            <div class="bg-gray-50 p-3 rounded-lg">
-              <p class="font-medium text-gray-800 mb-2">${i + 1}. ${q.text}</p>
-              <div class="text-sm text-gray-700">
-                ${q.options.map((opt, j) => `
-                  <div class="flex items-center space-x-2">
-                    <span class="${j === q.correctAnswer ? 'text-green-600 font-medium' : ''}">${String.fromCharCode(65 + j)}) ${opt}</span>
-                    ${j === q.correctAnswer ? '<span class="text-green-600">✓</span>' : ''}
-                  </div>
-                `).join('')}
-              </div>
-            </div>
-          `).join('')}
-          ${content.questions.length > 3 ? `<p class="text-sm text-gray-500 text-center">... and ${content.questions.length - 3} more questions</p>` : ''}
-        </div>
-      `;
-      return;
-    }
-
-    if (content?.cards) {
-      container.innerHTML = `
-        <div class="bg-green-50 p-4 rounded-lg mb-4">
-          <h3 class="font-semibold text-green-800 mb-2">Flashcards Overview</h3>
-          <p class="text-sm text-green-700">Total Cards: ${content.totalCards || content.cards.length}</p>
-        </div>
-        <div class="space-y-3">
-          ${content.cards.slice(0, 5).map(card => `
-            <div class="bg-white border border-gray-200 p-4 rounded-lg">
-              <div class="mb-2">
-                <span class="text-sm font-medium text-gray-600">Front:</span>
-                <p class="text-gray-800">${card.front}</p>
-              </div>
-              <div>
-                <span class="text-sm font-medium text-gray-600">Back:</span>
-                <p class="text-gray-800 whitespace-pre-wrap">${card.back}</p>
-              </div>
-            </div>
-          `).join('')}
-          ${content.cards.length > 5 ? `<p class="text-sm text-gray-500 text-center">... and ${content.cards.length - 5} more cards</p>` : ''}
-        </div>
-      `;
-      return;
-    }
-
-    // Generic fallback
-    container.innerHTML = `<div class="text-gray-700 whitespace-pre-wrap">${(content?.content || '').trim()}</div>`;
+  // Markdown reading content
+  if (content?.schema_version === 'md_v1') {
+    container.innerHTML = this.renderMarkdown(content.markdown || '');
+    return;
   }
 
+  // Quiz overview (from JSON)
+  if (type === 'quiz' && content?.questions) {
+    container.innerHTML = `
+      <div class="bg-purple-50 p-4 rounded-lg mb-4">
+        <h3 class="font-semibold text-purple-800 mb-2">Quiz Overview</h3>
+        <p class="text-sm text-purple-600">Total Questions: ${content.totalQuestions || content.questions.length}</p>
+      </div>
+      <div class="space-y-3">
+        ${content.questions.slice(0, 3).map((q, i) => `
+          <div class="bg-gray-50 p-3 rounded-lg">
+            <p class="font-medium text-gray-800 mb-2">${i + 1}. ${q.text}</p>
+            <div class="text-sm text-gray-700">
+              ${q.options.map((opt, j) => `
+                <div class="flex items-center space-x-2">
+                  <span class="${j === q.correctAnswer ? 'text-green-600 font-medium' : ''}">${String.fromCharCode(65 + j)}) ${opt}</span>
+                  ${j === q.correctAnswer ? '<span class="text-green-600">✓</span>' : ''}
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `).join('')}
+        ${content.questions.length > 3 ? `<p class="text-sm text-gray-500 text-center">... and ${content.questions.length - 3} more questions</p>` : ''}
+      </div>
+    `;
+    return;
+  }
+
+  // Flashcards overview (from JSON)
+ if (content?.cards) {
+  const total = content.totalCards || content.cards.length;
+  const currentTopicId = this.data.currentTopic?.id || '';
+  container.innerHTML = `
+    <div class="bg-green-50 p-4 rounded-lg mb-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="font-semibold text-green-800 mb-1">Flashcards</h3>
+          <p class="text-sm text-green-700">Total Cards: ${total}</p>
+        </div>
+        <button type="button"
+                data-start-flashcards
+                data-topic-id="${currentTopicId}"
+                class="px-3 py-1.5 bg-primary-500 text-white rounded hover:bg-primary-600">
+          Study now
+        </button>
+      </div>
+    </div>
+    <div class="space-y-3">
+      ${content.cards.slice(0, 5).map(card => `
+        <div class="bg-white border border-gray-200 p-4 rounded-lg">
+          <div class="mb-2">
+            <span class="text-sm font-medium text-gray-600">Front:</span>
+            <p class="text-gray-800">${card.front}</p>
+          </div>
+          <div>
+            <span class="text-sm font-medium text-gray-600">Back:</span>
+            <p class="text-gray-800 whitespace-pre-wrap">${card.back}</p>
+          </div>
+        </div>
+      `).join('')}
+      ${total > 5 ? `<p class="text-sm text-gray-500 text-center">... and ${total - 5} more cards</p>` : ''}
+    </div>
+  `;
+  return;
+}
+
+  // Fallback
+  container.innerHTML = `<div class="text-gray-700 whitespace-pre-wrap">${(content?.content || '').trim()}</div>`;
+}
   // Legacy parsers (fallbacks)
   parseQuizLegacy(response) {
     const lines = response.split('\n');
@@ -1048,6 +1065,230 @@ class StudyBuddyApp {
     this.loadContentView({ type, topicId });
     this.loadContentSlots(this.data.currentTopic);
   }
+  // ===== Flashcards Study (SRS) =====
+openFlashcardsStudy(topicId = null) {
+  // Find topic and course if needed
+  let topic = topicId ? this.findTopicById(this.data.currentCourse, topicId) : this.data.currentTopic;
+
+  if (!topic && topicId) {
+    // Try to find its course if currentCourse is not set
+    const course = this.data.courses.find(c => (c.topics || []).some(t => t.id === topicId));
+    if (course) {
+      this.data.currentCourse = course;
+      topic = this.findTopicById(course, topicId);
+    }
+  }
+  if (!topic) { this.showToast('Topic not found', 'error'); return; }
+
+  const slot = topic.contentSlots?.flashcards;
+  if (!slot || slot.status === 'empty' || !slot.content?.cards?.length) {
+    this.showToast('No flashcards available. Create flashcards first.', 'error');
+    return;
+  }
+
+  const modal = document.getElementById('flashcards-modal');
+  if (!modal) {
+    this.showToast('Flashcards modal not found in HTML. Add the modal block to your page.', 'error');
+    console.warn('Missing #flashcards-modal. Did you paste the modal HTML?');
+    return;
+  }
+
+  // Ensure SRS map
+  slot.srs = slot.srs || { cards: {} };
+  const srs = slot.srs.cards;
+
+  const cards = slot.content.cards;
+  const today = this._today();
+  const isDue = (c) => {
+    const st = srs[c.id];
+    if (!st) return true;
+    return !st.due || st.due <= today;
+    // Consider "new or due" as priority
+  };
+  const due = cards.filter(isDue);
+  const later = cards.filter(c => !isDue(c));
+  const deck = [...due, ...later];
+
+  this._flash = {
+    topicId: topic.id,
+    srsRef: srs,
+    deck,
+    index: 0,
+    showBack: false,
+    seen: 0,
+    correct: 0,
+    total: deck.length
+  };
+
+  this._wireFlashModal();
+
+  // Show modal
+  modal.classList.remove('hidden');
+  modal.style.display = 'block';
+
+  this._renderFlashcard();
+}
+
+closeFlashcardsStudy() {
+  const modal = document.getElementById('flashcards-modal');
+  if (modal) {
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
+  }
+  this._flash = null;
+  // Persist SRS state
+  this.saveData(false);
+}
+
+_flipFlashcard() {
+  if (!this._flash) return;
+  this._flash.showBack = !this._flash.showBack;
+  this._renderFlashcardFaces();
+}
+
+_nextFlashcard() {
+  if (!this._flash) return;
+  if (this._flash.index < this._flash.total - 1) {
+    this._flash.index++;
+    this._flash.showBack = false;
+    this._renderFlashcard();
+  } else {
+    this.showToast('Session complete 🎉', 'success');
+    this.closeFlashcardsStudy();
+  }
+}
+
+_prevFlashcard() {
+  if (!this._flash) return;
+  if (this._flash.index > 0) {
+    this._flash.index--;
+    this._flash.showBack = false;
+    this._renderFlashcard();
+  }
+}
+
+_gradeFlashcard(quality) {
+  // quality: 1=Again, 3=Hard, 4=Good, 5=Easy
+  if (!this._flash) return;
+  const { deck, index, srsRef } = this._flash;
+  const card = deck[index];
+  const st = srsRef[card.id] || { ease: 2.5, reps: 0, interval: 0, due: this._today(), lastGrade: null };
+
+  // SM-2 like update
+  const q = quality;
+  if (q < 3) {
+    st.reps = 0;
+    st.interval = 0;
+    st.due = this._today(); // show again (but not immediate—reinsert in-session)
+  } else {
+    if (st.reps === 0) { st.interval = 1; }
+    else if (st.reps === 1) { st.interval = 6; }
+    else { st.interval = Math.round(st.interval * st.ease); }
+    st.reps += 1;
+    // ease update
+    st.ease = Math.max(1.3, st.ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)));
+    st.due = this._addDays(st.interval);
+  }
+  st.lastGrade = q;
+  srsRef[card.id] = st;
+
+  // In-session handling: reinsert "Again" soon so learner sees it quickly again
+  if (q < 3) {
+    const insertPos = Math.min(this._flash.index + 2, this._flash.deck.length);
+    // Push a shallow copy to repeat in-session
+    this._flash.deck.splice(insertPos, 0, card);
+    this._flash.total = this._flash.deck.length;
+  } else {
+    this._flash.correct += 1;
+  }
+
+  this._flash.seen = Math.max(this._flash.seen, this._flash.index + 1);
+  this.saveData(false);
+  this._renderFlashFooterInfo();
+  this._nextFlashcard();
+}
+
+_renderFlashcard() {
+  if (!this._flash) return;
+  const { deck, index, total } = this._flash;
+
+  // Counts + progress
+  const countsEl = document.getElementById('flash-counts');
+  if (countsEl) countsEl.textContent = `${Math.min(this._flash.seen, index)}/${total}`;
+
+  const progress = Math.round(((index) / Math.max(total, 1)) * 100);
+  const bar = document.getElementById('flash-progress-bar');
+  const ptext = document.getElementById('flash-progress-text');
+  if (bar) bar.style.width = `${progress}%`;
+  if (ptext) ptext.textContent = `${progress}% complete`;
+
+  // Face content
+  this._renderFlashcardFaces();
+
+  // Footer info (due, etc.)
+  this._renderFlashFooterInfo();
+}
+
+_renderFlashcardFaces() {
+  const { deck, index, showBack } = this._flash;
+  const card = deck[index];
+  const frontEl = document.getElementById('flash-front');
+  const backEl  = document.getElementById('flash-back');
+
+  if (frontEl) frontEl.textContent = card.front || '';
+  if (backEl)  backEl.textContent  = card.back  || '';
+
+  if (showBack) {
+    backEl?.classList.remove('hidden');
+    frontEl?.classList.add('hidden');
+  } else {
+    frontEl?.classList.remove('hidden');
+    backEl?.classList.add('hidden');
+  }
+}
+
+_renderFlashFooterInfo() {
+  const info = document.getElementById('flash-due-info');
+  if (!info || !this._flash) return;
+  const { deck, index, srsRef } = this._flash;
+  const card = deck[index];
+  const st = srsRef[card.id];
+  if (!st) { info.textContent = 'New card'; return; }
+  info.textContent = `Ease ${st.ease.toFixed(2)} • Interval ${st.interval}d • Due ${st.due}`;
+}
+
+_wireFlashModal() {
+  if (this._flashWired) return;
+  this._flashWired = true;
+
+  document.addEventListener('keydown', (e) => {
+  if (!this._flash) return;
+  if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); this._flipFlashcard(); }
+  else if (e.key === 'ArrowRight') this._nextFlashcard();
+  else if (e.key === 'ArrowLeft')  this._prevFlashcard();
+});
+
+  document.getElementById('flash-close-btn')?.addEventListener('click', () => this.closeFlashcardsStudy());
+  document.getElementById('flash-flip-btn')?.addEventListener('click', () => this._flipFlashcard());
+  document.getElementById('flash-next-btn')?.addEventListener('click', () => this._nextFlashcard());
+  document.getElementById('flash-prev-btn')?.addEventListener('click', () => this._prevFlashcard());
+
+  document.getElementById('flash-grade-again')?.addEventListener('click', () => this._gradeFlashcard(1));
+  document.getElementById('flash-grade-hard') ?.addEventListener('click', () => this._gradeFlashcard(3));
+  document.getElementById('flash-grade-good') ?.addEventListener('click', () => this._gradeFlashcard(4));
+  document.getElementById('flash-grade-easy') ?.addEventListener('click', () => this._gradeFlashcard(5));
+}
+
+// Date helpers
+_today() {
+  const d = new Date();
+  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+}
+_addDays(n) {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
 
   // Quiz (MCQ-only)
   loadQuizView(data) {
@@ -1359,40 +1600,11 @@ Rules:
   }
 
   getContentPrompt(type, topic) {
-    const p = this.data.settings.personalization || { depth: 'standard', examples: 'medium', rigor: 'light', readTime: 10 };
-    const courseName = this.data.currentCourse?.name || 'Course';
+  const p = this.data.settings.personalization || { depth: 'standard', examples: 'medium', rigor: 'light', readTime: 10 };
+  const courseName = this.data.currentCourse?.name || 'Course';
 
-    if (type === 'quiz') {
-      return `ROLE: Assessment designer. Create MCQ-only quiz (10 items). Use course: ${courseName}, topic: "${topic.name}" (difficulty: ${topic.difficulty}).
-
-OUTPUT STRICTLY AS A SINGLE FENCED JSON BLOCK:
-\`\`\`json
-{
-  "schema_version": "quiz_mcq_v1",
-  "topic_id": "${topic.id}",
-  "title": "${topic.name} Quiz",
-  "items": [
-    {
-      "id": "q1",
-      "stem": "Write a clear question stem here...",
-      "options": [
-        {"text": "Option A", "feedback": "Why A is right/wrong", "isCorrect": false},
-        {"text": "Option B", "feedback": "Why B is right/wrong", "isCorrect": true},
-        {"text": "Option C", "feedback": "Why C is right/wrong", "isCorrect": false},
-        {"text": "Option D", "feedback": "Why D is right/wrong", "isCorrect": false}
-      ],
-      "difficulty": "medium",
-      "citation_ids": []
-    }
-  ],
-  "metadata": {"count": 10}
-}
-\`\`\`
-NO TEXT OUTSIDE THE JSON BLOCK.`;
-    }
-
-    if (type === 'flashcards') {
-      return `ROLE: Flashcard expert. Create 18 high-quality cards for ${courseName} • ${topic.name}.
+  if (type === 'flashcards') {
+    return `ROLE: Flashcard expert. Create 18 high-quality cards for ${courseName} • ${topic.name}.
 
 OUTPUT STRICTLY AS A SINGLE FENCED JSON BLOCK:
 \`\`\`json
@@ -1406,73 +1618,161 @@ OUTPUT STRICTLY AS A SINGLE FENCED JSON BLOCK:
 }
 \`\`\`
 NO TEXT OUTSIDE THE JSON BLOCK.`;
-    }
+  }
 
-    // reading_content_v1 hybrid for summary/explainer/review/practice
-    return `ROLE: Expert tutor. Generate structured reading content with embedded micro-checks (MCQ) and optional citations.
-TOPIC: ${courseName} • ${topic.name} (difficulty: ${topic.difficulty})
-PERSONALIZATION: depth=${p.depth}, examples=${p.examples}, rigor=${p.rigor}, read_time=${p.readTime}min
+  if (type === 'quiz') {
+    return `ROLE: Assessment designer. Create a 10-item MCQ quiz for ${courseName} • "${topic.name}" (difficulty: ${topic.difficulty}).
+REQUIREMENTS:
+- JSON ONLY (no extra text), schema quiz_mcq_v1
+- Exactly 10 items, 4 options (A–D), single correct
+- Every option must include concise feedback
 
-OUTPUT STRICTLY AS A SINGLE FENCED JSON BLOCK:
+OUTPUT:
 \`\`\`json
 {
-  "schema_version": "reading_content_v1",
+  "schema_version": "quiz_mcq_v1",
   "topic_id": "${topic.id}",
-  "title": "${topic.name}",
-  "rendered_markdown": "## ${topic.name}\\nWrite a coherent, accessible explanation here...",
-  "sections": [
+  "title": "${topic.name} Quiz",
+  "items": [
     {
-      "section_id": "core",
-      "title": "Core Concepts",
-      "body_markdown": "Key ideas...",
-      "micro_checks": [
-        {
-          "check_id": "mc1",
-          "prompt": "Which statement is correct?",
-          "options": [
-            {"text": "Wrong A", "isCorrect": false, "feedback": "Why wrong"},
-            {"text": "Right B", "isCorrect": true,  "feedback": "Why correct"},
-            {"text": "Wrong C", "isCorrect": false, "feedback": "Why wrong"},
-            {"text": "Wrong D", "isCorrect": false, "feedback": "Why wrong"}
-          ],
-          "citation_ids": []
-        }
+      "id": "q1",
+      "stem": "Clear question stem...",
+      "options": [
+        {"text": "Option A", "feedback": "Why right/wrong", "isCorrect": false},
+        {"text": "Option B", "feedback": "Why right/wrong", "isCorrect": true},
+        {"text": "Option C", "feedback": "Why right/wrong", "isCorrect": false},
+        {"text": "Option D", "feedback": "Why right/wrong", "isCorrect": false}
       ],
-      "citations": []
+      "difficulty": "medium",
+      "citation_ids": []
     }
   ],
-  "confidence": {"overall": 0.8, "coverage": 0.8, "notes": ""}
+  "metadata": {"count": 10}
 }
 \`\`\`
 NO TEXT OUTSIDE THE JSON BLOCK.`;
   }
 
-  showPromptModal(title, prompt) {
-    const titleEl = document.getElementById('prompt-modal-title');
-    const textEl = document.getElementById('prompt-text');
-    const modal = document.getElementById('prompt-modal');
-    if (!titleEl || !textEl || !modal) return;
-    titleEl.textContent = title;
-    textEl.value = prompt;
-    modal.classList.remove('hidden');
+  // Summary/Explainer/Review/Practice → Markdown only
+  return `ROLE: Expert tutor. Produce a comprehensive, textbook-quality Markdown document for ${courseName} • "${topic.name}" (difficulty: ${topic.difficulty}).
+PERSONALIZATION: depth=${p.depth}, examples=${p.examples}, rigor=${p.rigor}, target_read_time=${p.readTime}min
+
+STRICT RULES:
+- Output ONLY Markdown (no JSON, no code fences).
+- Cover ALL core subtopics thoroughly. If something is uncertain, state it and provide best-practice context.
+- Use clear headings (##, ###), short paragraphs, bullet lists, examples, visuals-in-words, and a final recap.
+- Include a TL;DR and 3–5 self-check questions with answers in a <details> block.
+
+SUGGESTED OUTLINE:
+## ${topic.name}
+[High-level introduction; why it matters]
+
+### Scope Map
+- [Key area 1]
+- [Key area 2]
+- [Key area 3]
+(Ensure all key areas are addressed below.)
+
+### Foundations and Definitions
+- Term: definition + where used
+- ...
+
+### Core Concepts
+- Concept 1: explanation, example, typical pitfalls
+- Concept 2: ...
+- Concept 3: ...
+
+### Worked Examples
+- Example A: step-by-step
+- Example B: variation, edge cases
+
+### Common Misconceptions
+- Misconception → Clarification
+- ...
+
+### Connections and Applications
+- Builds on: ...
+- Leads to: ...
+- Real-world examples: ...
+
+### TL;DR
+- Bullet summary of the most important points
+
+### Self-Check
+1. Question...
+2. Question...
+3. Question...
+<details><summary>Show Answers</summary>
+1. Answer...
+2. Answer...
+3. Answer...
+</details>`;
+}
+// --- Prompt modal helpers ---
+showPromptModal(title, prompt) {
+  const modal   = document.getElementById('prompt-modal');
+  const titleEl = document.getElementById('prompt-modal-title');
+  const textEl  = document.getElementById('prompt-text');
+
+  if (!modal || !titleEl || !textEl) {
+    console.warn('Prompt modal elements not found; falling back to alert.');
+    alert(prompt);
+    return;
   }
 
-  hidePromptModal() {
-    const modal = document.getElementById('prompt-modal');
-    if (modal) modal.classList.add('hidden');
+  titleEl.textContent = title;
+  textEl.value = prompt;
+
+  modal.classList.remove('hidden');
+  modal.style.display = 'block';
+  modal.style.zIndex = '9999';
+  modal.setAttribute('aria-hidden', 'false');
+}
+
+hidePromptModal() {
+  const modal = document.getElementById('prompt-modal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+  modal.style.display = 'none';
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+copyPromptToClipboard() {
+  const ta = document.getElementById('prompt-text');
+  if (!ta) {
+    this.showToast('Prompt area not found', 'error');
+    return;
   }
 
-  copyPromptToClipboard() {
-    const ta = document.getElementById('prompt-text');
-    if (!ta) return;
-    ta.select();
+  const fallback = () => {
+    const tmp = document.createElement('textarea');
+    tmp.value = ta.value || '';
+    document.body.appendChild(tmp);
+    tmp.select();
     document.execCommand('copy');
+    document.body.removeChild(tmp);
+  };
+
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(ta.value || '').then(() => {
+      this.showToast('Prompt copied to clipboard!', 'success');
+      this.hidePromptModal();
+    }).catch(() => {
+      fallback();
+      this.showToast('Prompt copied to clipboard!', 'success');
+      this.hidePromptModal();
+    });
+  } else {
+    fallback();
     this.showToast('Prompt copied to clipboard!', 'success');
     this.hidePromptModal();
   }
+}
+// --- end modal helpers ---
 
-  // Study view
-  loadStudyView() {
+
+ // Study view
+    loadStudyView() {
     const queueEl = document.getElementById('study-queue');
     if (!queueEl) return;
 
@@ -1528,6 +1828,17 @@ NO TEXT OUTSIDE THE JSON BLOCK.`;
   }
 
   // Utilities
+  renderMarkdown(md) {
+  if (window.marked) {
+    const html = window.marked.parse(md);
+    return window.DOMPurify ? window.DOMPurify.sanitize(html) : html;
+  }
+  // Fallback: minimal safe rendering
+  const escape = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return escape(md).replace(/\n/g, '<br>');
+}
+
+
   showToast(message, type = 'info') {
     const toast = document.createElement('div');
     toast.className = `p-4 rounded-lg shadow-lg text-white max-w-sm transform translate-x-0 opacity-100 transition-all duration-300 ${
@@ -1642,9 +1953,9 @@ function copyPrompt(type) {
   if (type === 'structure') {
     prompt = app.getStructurePrompt();
   } else if (type === 'quiz') {
-    prompt = `ROLE: Assessment designer. MCQ-only quiz (10 items).
+    prompt = `ROLE: Assessment designer. Create a 10-item MCQ quiz.
 
-OUTPUT:
+OUTPUT JSON ONLY (quiz_mcq_v1):
 \`\`\`json
 {
   "schema_version": "quiz_mcq_v1",
@@ -1655,70 +1966,35 @@ OUTPUT:
       "id": "q1",
       "stem": "Question here...",
       "options": [
-        {"text": "Option A", "feedback": "Explain", "isCorrect": false},
-        {"text": "Option B", "feedback": "Explain", "isCorrect": true},
-        {"text": "Option C", "feedback": "Explain", "isCorrect": false},
-        {"text": "Option D", "feedback": "Explain", "isCorrect": false}
+        {"text":"A","feedback":"...","isCorrect":false},
+        {"text":"B","feedback":"...","isCorrect":true},
+        {"text":"C","feedback":"...","isCorrect":false},
+        {"text":"D","feedback":"...","isCorrect":false}
       ],
-      "difficulty": "medium",
-      "citation_ids": []
+      "difficulty":"medium",
+      "citation_ids":[]
     }
   ],
-  "metadata": {"count": 10}
+  "metadata":{"count":10}
 }
 \`\`\`
 NO TEXT OUTSIDE THE JSON BLOCK.`;
-    } else if (type === 'flashcards') {
+  } else if (type === 'flashcards') {
     prompt = `ROLE: Flashcard expert. Produce 18 cards.
 
-OUTPUT:
+OUTPUT JSON ONLY (flashcards_v1):
 \`\`\`json
 {
-  "schema_version": "flashcards_v1",
-  "topic_id": "topic_id_here",
-  "cards": [
-    { "id": "c1", "front": "Front text", "back": "Back text", "tags": ["definition"], "citation_ids": [] }
-  ],
-  "total": 18
+  "schema_version":"flashcards_v1",
+  "topic_id":"topic_id_here",
+  "cards":[{"id":"c1","front":"Front text","back":"Back text","tags":["definition"],"citation_ids":[]}],
+  "total":18
 }
 \`\`\`
 NO TEXT OUTSIDE THE JSON BLOCK.`;
   } else {
-    // reading / explainer / practice / review use reading template
-    prompt = `ROLE: Expert tutor. Generate structured reading with micro-checks.
-
-OUTPUT:
-\`\`\`json
-{
-  "schema_version": "reading_content_v1",
-  "topic_id": "topic_id_here",
-  "title": "Topic Name",
-  "rendered_markdown": "## Topic Name\\nContent...",
-  "sections": [
-    {
-      "section_id": "intro",
-      "title": "Introduction",
-      "body_markdown": "Text...",
-      "micro_checks": [
-        {
-          "check_id": "mc1",
-          "prompt": "Which is correct?",
-          "options": [
-            {"text": "A", "isCorrect": false, "feedback": "Why"},
-            {"text": "B", "isCorrect": true,  "feedback": "Why"},
-            {"text": "C", "isCorrect": false, "feedback": "Why"},
-            {"text": "D", "isCorrect": false, "feedback": "Why"}
-          ],
-          "citation_ids": []
-        }
-      ],
-      "citations": []
-    }
-  ],
-  "confidence": {"overall": 0.8, "coverage": 0.8, "notes": ""}
-}
-\`\`\`
-NO TEXT OUTSIDE THE JSON BLOCK.`;
+    // summary / explainer / practice / review → Markdown only
+    prompt = app.getContentPrompt(type, app.data.currentTopic || { name: 'Selected Topic', difficulty: 'Medium' });
   }
 
   const fallbackCopy = () => {
@@ -1730,11 +2006,8 @@ NO TEXT OUTSIDE THE JSON BLOCK.`;
     document.body.removeChild(ta);
     app.showToast('Prompt copied to clipboard!', 'success');
   };
-
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(prompt)
-      .then(() => app.showToast('Prompt copied to clipboard!', 'success'))
-      .catch(fallbackCopy);
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(prompt).then(() => app.showToast('Prompt copied to clipboard!', 'success')).catch(fallbackCopy);
   } else {
     fallbackCopy();
   }
