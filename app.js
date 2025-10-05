@@ -146,8 +146,9 @@ document.addEventListener('click', (e) => {
   }
 
   applyDarkMode(enabled) {
-    document.documentElement.classList.toggle('dark', enabled);
-  }
+  document.documentElement.classList.toggle('dark', enabled);
+  try { localStorage.setItem('theme', enabled ? 'dark' : 'light'); } catch {}
+}
 
   toggleHeaderMenu() {
     const menu = document.getElementById('header-menu');
@@ -1267,7 +1268,7 @@ _wireFlashModal() {
   else if (e.key === 'ArrowRight') this._nextFlashcard();
   else if (e.key === 'ArrowLeft')  this._prevFlashcard();
 });
-
+  document.getElementById('flashcard-face')?.addEventListener('click', () => this._flipFlashcard());
   document.getElementById('flash-close-btn')?.addEventListener('click', () => this.closeFlashcardsStudy());
   document.getElementById('flash-flip-btn')?.addEventListener('click', () => this._flipFlashcard());
   document.getElementById('flash-next-btn')?.addEventListener('click', () => this._nextFlashcard());
@@ -1602,37 +1603,49 @@ Rules:
   getContentPrompt(type, topic) {
   const p = this.data.settings.personalization || { depth: 'standard', examples: 'medium', rigor: 'light', readTime: 10 };
   const courseName = this.data.currentCourse?.name || 'Course';
+  const topicName  = topic?.name || '[TOPIC NAME]';
+  const personalize = `Personalization: depth=${p.depth}, examples=${p.examples}, rigor=${p.rigor}, target_read_time=${p.readTime}min`;
+
+  // Helper: build MUST COVER + coverage checklist from subtopics/concepts
+  const hasSubs = Array.isArray(topic?.subtopics) && topic.subtopics.length > 0;
+  const mustCoverLines = hasSubs
+    ? topic.subtopics.map(s => {
+        const conceptList = Array.isArray(s.concepts) && s.concepts.length
+          ? `: ${s.concepts.join(', ')}`
+          : '';
+        return `- ${s.name}${conceptList}`;
+      }).join('\n')
+    : '';
+
+  const coverageChecklist = hasSubs
+    ? topic.subtopics.map(s => `- [ ] ${s.name} (covered) — cite page(s): …`).join('\n')
+    : `- [ ] All major sections (covered) — cite\n- [ ] All key formulas/rules (covered) — cite\n- [ ] Worked examples (covered) — cite`;
 
   if (type === 'flashcards') {
-    return `ROLE: Flashcard expert. Create 18 high-quality cards for ${courseName} • ${topic.name}.
+    return `ROLE: Flashcard expert. Create 18–24 high-quality cards for ${courseName} • "${topicName}".
 
-OUTPUT STRICTLY AS A SINGLE FENCED JSON BLOCK:
+OUTPUT STRICTLY AS A SINGLE FENCED JSON BLOCK (no text outside the block):
 \`\`\`json
 {
   "schema_version": "flashcards_v1",
-  "topic_id": "${topic.id}",
+  "topic_id": "${topic?.id || 'topic_id_here'}",
   "cards": [
-    {"id": "c1", "front": "Prompt question or term...", "back": "Concise answer with example.", "tags": ["definition"], "citation_ids": []}
+    {"id": "c1", "front": "Term or question...", "back": "Concise answer with example.", "tags": ["definition"], "citation_ids": []}
   ],
-  "total": 18
+  "total": 20
 }
-\`\`\`
-NO TEXT OUTSIDE THE JSON BLOCK.`;
+\`\`\``;
   }
 
   if (type === 'quiz') {
-    return `ROLE: Assessment designer. Create a 10-item MCQ quiz for ${courseName} • "${topic.name}" (difficulty: ${topic.difficulty}).
-REQUIREMENTS:
-- JSON ONLY (no extra text), schema quiz_mcq_v1
-- Exactly 10 items, 4 options (A–D), single correct
-- Every option must include concise feedback
+    return `ROLE: Assessment designer. Create a 10-item MCQ quiz for ${courseName} • "${topicName}".
+Constraints: JSON ONLY (quiz_mcq_v1). Exactly 4 options per item, single correct. Every option has feedback.
 
-OUTPUT:
 \`\`\`json
 {
   "schema_version": "quiz_mcq_v1",
-  "topic_id": "${topic.id}",
-  "title": "${topic.name} Quiz",
+  "topic_id": "${topic?.id || 'topic_id_here'}",
+  "title": "${topicName} Quiz",
   "items": [
     {
       "id": "q1",
@@ -1649,64 +1662,187 @@ OUTPUT:
   ],
   "metadata": {"count": 10}
 }
-\`\`\`
-NO TEXT OUTSIDE THE JSON BLOCK.`;
+\`\`\``;
   }
 
-  // Summary/Explainer/Review/Practice → Markdown only
-  return `ROLE: Expert tutor. Produce a comprehensive, textbook-quality Markdown document for ${courseName} • "${topic.name}" (difficulty: ${topic.difficulty}).
-PERSONALIZATION: depth=${p.depth}, examples=${p.examples}, rigor=${p.rigor}, target_read_time=${p.readTime}min
+  if (type === 'summary') {
+    const mustCoverBlock = hasSubs
+      ? `\nMUST COVER (from course structure):\n${mustCoverLines}\n`
+      : '';
 
-STRICT RULES:
-- Output ONLY Markdown (no JSON, no code fences).
-- Cover ALL core subtopics thoroughly. If something is uncertain, state it and provide best-practice context.
-- Use clear headings (##, ###), short paragraphs, bullet lists, examples, visuals-in-words, and a final recap.
-- Include a TL;DR and 3–5 self-check questions with answers in a <details> block.
+    return `ROLE: Expert subject-matter educator. Write a complete, textbook-quality teaching text that can replace reading the source chapter for the topic: "${topicName}" in "${courseName}".
 
-SUGGESTED OUTLINE:
-## ${topic.name}
-[High-level introduction; why it matters]
+SOURCE OF TRUTH:
+- Use the uploaded chapter as your source. Cite page numbers or section titles where relevant.
+- Do not invent facts. If something is not in the source, say so.
 
-### Scope Map
-- [Key area 1]
-- [Key area 2]
-- [Key area 3]
-(Ensure all key areas are addressed below.)
+${mustCoverBlock}${personalize}
 
-### Foundations and Definitions
-- Term: definition + where used
-- ...
+CONSTRAINTS:
+- Output Markdown only. No JSON. No code fences.
+- Be as comprehensive as needed; do not omit any required subtopic.
+- Use clear section headings and concise paragraphs.
 
-### Core Concepts
-- Concept 1: explanation, example, typical pitfalls
-- Concept 2: ...
-- Concept 3: ...
+STRUCTURE:
+## ${topicName}
+[High-level introduction; why this matters; where it fits]
 
-### Worked Examples
-- Example A: step-by-step
-- Example B: variation, edge cases
+### Scope Map (What you will learn)
+- Bullet the subtopics (use MUST COVER list verbatim if present)
 
-### Common Misconceptions
-- Misconception → Clarification
-- ...
+### Foundations and Notation
+- Definitions of all key terms
+- Symbols/notation used throughout
 
-### Connections and Applications
-- Builds on: ...
-- Leads to: ...
-- Real-world examples: ...
+### Core Sections (one per subtopic${hasSubs ? '' : ' or major concept'})
+For each ${hasSubs ? 'subtopic in MUST COVER' : 'major concept from the chapter'}:
+- Concept explanations (with relationships to other concepts)
+- Theorems/rules/formulas (state them; when applicable, sketch derivations)
+- Worked example(s): step-by-step
+- Common pitfalls and clarifications
+- Cross-links to related subtopics (connections)
+- Cite page(s) or section(s) for facts and formulas
+
+### Applications
+- Real-world examples or typical use cases
+- Decision rules: when to use which method
+
+### Edge Cases, Assumptions, Limitations
+- Boundary conditions, failure modes, caveats
+
+### Quick Reference (Cheat Sheet)
+- Must-know facts
+- Essential formulas with when/how to use
+- Key terminology (1–2 lines each)
 
 ### TL;DR
-- Bullet summary of the most important points
+- 5–10 bullets summarizing the most important points
 
-### Self-Check
-1. Question...
-2. Question...
-3. Question...
+### Self-Check (answers in a <details> block)
+1) Question…
+2) Question…
+3) Question…
 <details><summary>Show Answers</summary>
-1. Answer...
-2. Answer...
-3. Answer...
-</details>`;
+1) …
+2) …
+3) …
+</details>
+
+### Coverage Checklist (verify nothing was missed)
+${coverageChecklist}
+
+CITATIONS:
+- When introducing a fact, claim, or formula, include (p. X) or (Section Y) inline when possible.`;
+  }
+
+  if (type === 'explainer') {
+    return `ROLE: Expert tutor known for clarity. Explain the concept "[CONCEPT NAME]" within "${topicName}" from ${courseName}.
+${personalize}
+If no concept is specified, select the 1–2 most challenging concepts in this topic.
+Constraints: Markdown only.
+
+## [CONCEPT NAME] - Complete Explanation
+
+### Simple Definition
+- Everyday-language explanation before technical terms
+
+### Step-by-Step Breakdown
+- Decompose into parts, explain each, show how they connect
+
+### Multiple Analogies
+- 2–3 analogies using familiar situations
+
+### Visual Description
+- What a diagram/mental image would look like
+
+### Common Student Questions
+- Anticipated questions with clear answers
+
+### Practice Application
+- A small worked example showing the concept in action
+
+### Why It Matters
+- Bigger picture, relevance, and connections`;
+  }
+
+  if (type === 'practice') {
+    return `ROLE: Problem creator for ${courseName}. Generate scaffolded practice for "${topicName}".
+${personalize}
+Constraints: Markdown only.
+
+## ${topicName} Practice Problems
+
+### Warm-Up Problems (3–4)
+**Problem 1:** [basic application]
+*Solution:* [step-by-step]
+*Key Concept:* [what it practices]
+
+### Standard Problems (4–6)
+**Problem X:** [typical difficulty]
+*Hints:* [guidance if stuck]
+*Solution:* [detailed]
+
+### Challenge Problems (2–3)
+**Problem Y:** [multi-step or tricky]
+*Approach:* [strategy]
+*Solution:* [complete with reasoning]
+
+### Application Problems (2–3)
+**Problem Z:** [real-world scenario]
+*Analysis:* [how to approach]
+*Solution:* [practical solution]
+
+For each problem include: clear statement, any data, step-by-step solution, common mistakes, and the reinforced concepts.`;
+  }
+
+  if (type === 'review') {
+    return `ROLE: Instructor preparing a full review for "${topicName}" in ${courseName}.
+${personalize}
+Constraints: Markdown only.
+
+## ${topicName} - Complete Review Session
+
+### Topic Mastery Checklist
+□ [Key concept] - Can you explain it clearly?
+□ [Key concept] - Can you give an example?
+□ [Key concept] - Can you solve problems with this?
+
+### Quick Reference Sheet
+**Must-Know Facts**
+- [Fact 1]
+- [Fact 2]
+
+**Essential Formulas/Rules**
+- [Formula]: When to use it
+- [Formula]: Common applications
+
+**Key Terminology**
+- [Term]: [Definition]
+
+### Self-Assessment Questions
+1) [Question]
+2) [Question]
+3) [Question]
+
+### Common Exam Questions on This Topic
+- Type: [Question style + example]
+- Type: [Question style + example]
+
+### Final Review Tips
+- [Study tip]
+- [What to focus on most]
+- [Common traps to avoid]
+
+### Topic Connections
+- Builds on: [Previous topics]
+- Leads to: [Future topics]
+- Related concepts: [Cross-links]`;
+  }
+
+  // Fallback → Summary style
+  return `ROLE: Expert tutor. Create a complete topic summary for "${topicName}" from ${courseName}.
+${personalize}
+Markdown only. Include: Core Sections, Applications, Edge Cases, Quick Reference, TL;DR, Self-Check, Coverage Checklist with citations.`;
 }
 // --- Prompt modal helpers ---
 showPromptModal(title, prompt) {
@@ -1901,6 +2037,7 @@ copyPromptToClipboard() {
         }
         if (confirm('This will replace all current data. Continue?')) {
           this.data = imported;
+          this.applyDarkMode(!!(this.data.settings && this.data.settings.darkMode));
           this.saveData(false);
           this.showToast('Data imported successfully!', 'success');
           this.showView('dashboard');
@@ -1930,6 +2067,7 @@ copyPromptToClipboard() {
         currentContent: null
       };
       this.applyDarkMode(false);
+      try { localStorage.setItem('theme', 'light'); } catch {}
       this.showToast('All data cleared', 'success');
       this.showView('dashboard');
       this.updateDashboard();
