@@ -1666,49 +1666,73 @@ Constraints: JSON ONLY (quiz_mcq_v1). Exactly 4 options per item, single correct
   }
 
   if (type === 'summary') {
-    const mustCoverBlock = hasSubs
-      ? `\nMUST COVER (from course structure):\n${mustCoverLines}\n`
-      : '';
+  const hasSubs = Array.isArray(topic?.subtopics) && topic.subtopics.length > 0;
+  const mustCoverLines = hasSubs
+    ? topic.subtopics.map(s => {
+        const conceptList = Array.isArray(s.concepts) && s.concepts.length
+          ? `: ${s.concepts.join(', ')}`
+          : '';
+        return `- ${s.name}${conceptList}`;
+      }).join('\n')
+    : '';
 
-    return `ROLE: Expert subject-matter educator. Write a complete, textbook-quality teaching text that can replace reading the source chapter for the topic: "${topicName}" in "${courseName}".
+  const mustCoverBlock = hasSubs
+    ? `\nMUST COVER (from course structure):\n${mustCoverLines}\n`
+    : '';
+
+  const coverageChecklist = hasSubs
+    ? topic.subtopics.map(s => `- [ ] ${s.name} — cite page(s): (p. … / pp. …)`).join('\n')
+    : `- [ ] All major sections — cite page(s) if needed\n- [ ] All key formulas/rules — cite page(s)\n- [ ] Worked examples — cite page(s)`;
+
+  const p = this.data.settings.personalization || { depth: 'standard', examples: 'medium', rigor: 'light', readTime: 10 };
+  const courseName = this.data.currentCourse?.name || 'Course';
+  const topicName  = topic?.name || '[TOPIC NAME]';
+  const personalize = `Personalization: depth=${p.depth}, examples=${p.examples}, rigor=${p.rigor}, target_read_time=${p.readTime}min`;
+
+  return `ROLE: Expert subject-matter educator. Write a complete, textbook-quality teaching text that can replace reading the source chapter for the topic: "${topicName}" in "${courseName}".
 
 SOURCE OF TRUTH:
-- Use the uploaded chapter as your source. Cite page numbers or section titles where relevant.
+- Use the uploaded chapter as your source.
 - Do not invent facts. If something is not in the source, say so.
+
+CITATION STYLE (plain text only):
+- Use parentheses only, e.g., (p. 199), (pp. 199–201), (Sec. 3.2). No brackets, no tags, no links.
+- Cite sparingly: at most one citation per paragraph, only when introducing a specific claim/definition/formula. Prefer placing it at the end of the paragraph.
 
 ${mustCoverBlock}${personalize}
 
-CONSTRAINTS:
+CONSTRAINTS AND FLEXIBILITY:
 - Output Markdown only. No JSON. No code fences.
-- Be as comprehensive as needed; do not omit any required subtopic.
-- Use clear section headings and concise paragraphs.
+- Cover all MUST COVER items (if given), but be flexible:
+  • Omit sections that add no value for this topic.
+  • Merge trivial subtopics into larger sections when appropriate.
+  • Reorder sections for clarity and pedagogy.
 
-STRUCTURE:
+STRUCTURE (adapt as needed):
 ## ${topicName}
-[High-level introduction; why this matters; where it fits]
+[High-level introduction: why this matters; where it fits]
 
 ### Scope Map (What you will learn)
 - Bullet the subtopics (use MUST COVER list verbatim if present)
 
-### Foundations and Notation
-- Definitions of all key terms
-- Symbols/notation used throughout
+### Foundations and Notation (include only if relevant)
+- Definitions of key terms
+- Symbols/notation used
 
 ### Core Sections (one per subtopic${hasSubs ? '' : ' or major concept'})
 For each ${hasSubs ? 'subtopic in MUST COVER' : 'major concept from the chapter'}:
-- Concept explanations (with relationships to other concepts)
-- Theorems/rules/formulas (state them; when applicable, sketch derivations)
+- Concept explanation and relationships
+- Theorems/rules/formulas (state; sketch derivations where useful)
 - Worked example(s): step-by-step
 - Common pitfalls and clarifications
-- Cross-links to related subtopics (connections)
-- Cite page(s) or section(s) for facts and formulas
+- Cross-links to related subtopics
+- Cite page/section when introducing specific facts or formulas (p. … / Sec. …)
 
-### Applications
+### Applications (include only if relevant)
 - Real-world examples or typical use cases
 - Decision rules: when to use which method
 
-### Edge Cases, Assumptions, Limitations
-- Boundary conditions, failure modes, caveats
+### Edge Cases, Assumptions, Limitations (include only if relevant)
 
 ### Quick Reference (Cheat Sheet)
 - Must-know facts
@@ -1718,23 +1742,17 @@ For each ${hasSubs ? 'subtopic in MUST COVER' : 'major concept from the chapter'
 ### TL;DR
 - 5–10 bullets summarizing the most important points
 
-### Self-Check (answers in a <details> block)
+### Self-Check (answers shown inline)
 1) Question…
+   Answer: …
 2) Question…
+   Answer: …
 3) Question…
-<details><summary>Show Answers</summary>
-1) …
-2) …
-3) …
-</details>
+   Answer: …
 
 ### Coverage Checklist (verify nothing was missed)
-${coverageChecklist}
-
-CITATIONS:
-- When introducing a fact, claim, or formula, include (p. X) or (Section Y) inline when possible.`;
-  }
-
+${coverageChecklist}`;
+}
   if (type === 'explainer') {
     return `ROLE: Expert tutor known for clarity. Explain the concept "[CONCEPT NAME]" within "${topicName}" from ${courseName}.
 ${personalize}
