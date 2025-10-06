@@ -32,12 +32,14 @@ class StudyBuddyApp {
     };
     this.currentQuiz = null;
     this.menuOpen = false;
+    this.quizMasteryThreshold = 70; // auto-complete quiz at or above this %
 
     this.init();
   }
 
   init() {
     this.loadData();
+    this.migrateDataSchema();
     this.applyDarkMode(this.data.settings.darkMode);
     this.setupEventListeners();
     this.updateDashboard();
@@ -53,7 +55,39 @@ class StudyBuddyApp {
       this.showToast('Failed to save data', 'error');
     }
   }
-
+  migrateDataSchema() {
+    try {
+      for (const course of this.data.courses || []) {
+        for (const topic of course.topics || []) {
+          const slots = topic.contentSlots || {};
+          for (const key of Object.keys(slots)) {
+            const slot = slots[key] || {};
+            if (typeof slot.completed !== 'boolean') slot.completed = false;
+            if (key === 'quiz') {
+              if (!Array.isArray(slot.attempts)) slot.attempts = [];
+              if (typeof slot.bestScore !== 'number') slot.bestScore = 0;
+            }
+            if (key === 'flashcards') {
+              if (!slot.srs) slot.srs = { cards: {} };
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Schema migration skipped:', e);
+    }
+    // Backfill personalization defaults
+    this.data.settings = this.data.settings || {};
+    this.data.settings.personalization = this.data.settings.personalization || {};
+    const pp = this.data.settings.personalization;
+    if (!pp.depth) pp.depth = 'standard';
+    if (!pp.examples) pp.examples = 'medium';
+    if (!pp.rigor) pp.rigor = 'light';
+    if (typeof pp.readTime !== 'number') pp.readTime = 10;
+    if (!pp.difficulty) pp.difficulty = 'Intermediate';
+    if (!pp.citation) pp.citation = 'minimal';
+    if (typeof pp.flashcardsCount !== 'number') pp.flashcardsCount = 15;
+  }
   loadData() {
     try {
       const saved = localStorage.getItem('studyBuddyData');
@@ -64,6 +98,81 @@ class StudyBuddyApp {
     } catch (error) {
       console.error('Failed to load data:', error);
     }
+  }
+  _getDefaultPrefs() {
+    return {
+      depth: 'standard',
+      examples: 'medium',
+      rigor: 'light',
+      readTime: 10,
+      difficulty: 'Intermediate',
+      citation: 'minimal',
+      flashcardsCount: 15
+    };
+  }
+
+  _initPreferenceControls() {
+    const pp = this.data.settings.personalization || this._getDefaultPrefs();
+
+    const el = (id) => document.getElementById(id);
+
+    const depthEl = el('pref-depth');
+    const exEl = el('pref-examples');
+    const rigEl = el('pref-rigor');
+    const diffEl = el('pref-difficulty');
+    const citEl = el('pref-citation');
+    const rtEl = el('pref-readtime');
+    const rtVal = el('pref-readtime-value');
+    const fcEl = el('pref-fc-count');
+    const resetEl = el('prefs-reset-btn');
+
+    if (!depthEl) return; // Settings view not in DOM yet
+
+    // Set initial values
+    depthEl.value = pp.depth;
+    exEl.value = pp.examples;
+    rigEl.value = pp.rigor;
+    diffEl.value = pp.difficulty;
+    citEl.value = pp.citation;
+    rtEl.value = pp.readTime;
+    rtVal.textContent = String(pp.readTime);
+    fcEl.value = pp.flashcardsCount;
+
+    const save = () => {
+      this.saveData(false);
+      this.showToast('Preferences saved', 'success');
+    };
+
+    depthEl.addEventListener('change', e => { pp.depth = e.target.value; save(); });
+    exEl.addEventListener('change', e => { pp.examples = e.target.value; save(); });
+    rigEl.addEventListener('change', e => { pp.rigor = e.target.value; save(); });
+    diffEl.addEventListener('change', e => { pp.difficulty = e.target.value; save(); });
+    citEl.addEventListener('change', e => { pp.citation = e.target.value; save(); });
+    rtEl.addEventListener('input', e => { rtVal.textContent = e.target.value; });
+    rtEl.addEventListener('change', e => { pp.readTime = Number(e.target.value); save(); });
+    fcEl.addEventListener('change', e => {
+      let n = Number(e.target.value);
+      if (!Number.isFinite(n)) n = 15;
+      n = Math.max(5, Math.min(50, n));
+      pp.flashcardsCount = n;
+      e.target.value = String(n);
+      save();
+    });
+
+    resetEl.addEventListener('click', () => {
+      const def = this._getDefaultPrefs();
+      Object.assign(pp, def);
+      depthEl.value = pp.depth;
+      exEl.value = pp.examples;
+      rigEl.value = pp.rigor;
+      diffEl.value = pp.difficulty;
+      citEl.value = pp.citation;
+      rtEl.value = pp.readTime;
+      rtVal.textContent = String(pp.readTime);
+      fcEl.value = pp.flashcardsCount;
+      this.saveData(false);
+      this.showToast('Preferences reset to defaults', 'info');
+    });
   }
 
   // Event Listeners
@@ -93,6 +202,7 @@ class StudyBuddyApp {
       if (action === 'export') this.exportData();
       this.closeHeaderMenu();
     });
+
 
     // Course management
     document.getElementById('add-course-btn')?.addEventListener('click', () => this.showAddCourseModal());
@@ -133,22 +243,25 @@ class StudyBuddyApp {
       });
     }
     // Flashcards "Study now" (event delegation)
-document.addEventListener('click', (e) => {
-  const btn = e.target.closest('[data-start-flashcards]');
-  if (!btn) return;
-  const topicId = btn.getAttribute('data-topic-id') || this.data.currentTopic?.id;
-  this.openFlashcardsStudy(topicId);
-});
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-start-flashcards]');
+      if (!btn) return;
+      const topicId = btn.getAttribute('data-topic-id') || this.data.currentTopic?.id;
+      this.openFlashcardsStudy(topicId);
+    });
 
 
     // Quiz
     this.setupQuizEventListeners();
+
+
+    this._initPreferenceControls();
   }
 
   applyDarkMode(enabled) {
-  document.documentElement.classList.toggle('dark', enabled);
-  try { localStorage.setItem('theme', enabled ? 'dark' : 'light'); } catch {}
-}
+    document.documentElement.classList.toggle('dark', enabled);
+    try { localStorage.setItem('theme', enabled ? 'dark' : 'light'); } catch { }
+  }
 
   toggleHeaderMenu() {
     const menu = document.getElementById('header-menu');
@@ -181,6 +294,41 @@ document.addEventListener('click', (e) => {
     document.getElementById('quiz-prev-btn')?.addEventListener('click', () => this.prevQuizQuestion());
     document.getElementById('retake-quiz-btn')?.addEventListener('click', () => this.retakeQuiz());
     document.getElementById('quiz-review-btn')?.addEventListener('click', () => this.reviewQuizAnswers());
+  }
+
+
+
+  markContentCompleted(type, topicId) {
+    const cIdx = this.data.courses.findIndex(c => c.id === this.data.currentCourse?.id);
+    if (cIdx < 0) return;
+    const tIdx = this.data.courses[cIdx].topics.findIndex(t => t.id === topicId);
+    if (tIdx < 0) return;
+    const slot = this.data.courses[cIdx].topics[tIdx].contentSlots[type];
+    if (!slot || slot.status === 'empty') {
+      this.showToast('Generate content before marking completed', 'warning');
+      return;
+    }
+    slot.completed = true;
+    slot.lastUpdated = new Date().toISOString();
+    this.saveData(false);
+    this.showToast('Marked as completed ✅', 'success');
+    this.loadContentSlots(this.data.courses[cIdx].topics[tIdx]);
+    this.loadTopicDetail({ topicId }); // refresh header progress
+  }
+
+  unmarkContentCompleted(type, topicId) {
+    const cIdx = this.data.courses.findIndex(c => c.id === this.data.currentCourse?.id);
+    if (cIdx < 0) return;
+    const tIdx = this.data.courses[cIdx].topics.findIndex(t => t.id === topicId);
+    if (tIdx < 0) return;
+    const slot = this.data.courses[cIdx].topics[tIdx].contentSlots[type];
+    if (!slot) return;
+    slot.completed = false;
+    slot.lastUpdated = new Date().toISOString();
+    this.saveData(false);
+    this.showToast('Completion undone', 'info');
+    this.loadContentSlots(this.data.courses[cIdx].topics[tIdx]);
+    this.loadTopicDetail({ topicId });
   }
 
   // Navigation
@@ -353,6 +501,7 @@ document.addEventListener('click', (e) => {
     this.showView('quiz', { topicId });
   }
 
+
   // Courses
   showAddCourseModal() {
     document.getElementById('add-course-modal')?.classList.remove('hidden');
@@ -384,6 +533,50 @@ document.addEventListener('click', (e) => {
     this.showToast('Course created successfully!', 'success');
     this.loadCourses();
   }
+  confirmDeleteCourse(courseId, ev) {
+    try { ev && ev.stopPropagation && ev.stopPropagation(); } catch { }
+    const course = this.findCourseById(courseId);
+    if (!course) return;
+
+    const ok = confirm(`Delete "${course.name}" and all its topics and content?\nThis cannot be undone.`);
+    if (!ok) return;
+
+    this.deleteCourse(courseId);
+  }
+
+  deleteCourse(courseId) {
+    const idx = this.data.courses.findIndex(c => c.id === courseId);
+    if (idx === -1) return;
+
+    const wasCurrent = this.data.currentCourse && this.data.currentCourse.id === courseId;
+
+    // Remove course
+    this.data.courses.splice(idx, 1);
+
+    // Clear current pointers if we deleted the current course
+    if (wasCurrent) {
+      this.data.currentCourse = null;
+      this.data.currentTopic = null;
+      this.data.currentContent = null;
+    }
+
+    this.saveData(false);
+    this.showToast('Course deleted', 'success');
+
+    // Navigate if we were inside that course
+    const inCourseContext = ['course-detail', 'topic-detail', 'content', 'quiz'].includes(this.data.currentView);
+    if (wasCurrent && inCourseContext) {
+      this.showView('courses');
+    } else {
+      // Refresh current view lists if needed
+      if (this.data.currentView === 'courses') this.loadCourses();
+      if (this.data.currentView === 'dashboard') this.updateDashboard();
+      if (this.data.currentView === 'study') this.loadStudyView();
+    }
+
+    // Always refresh dashboard counts
+    this.updateDashboard();
+  }
 
   loadCourses() {
     const container = document.getElementById('courses-list');
@@ -402,25 +595,29 @@ document.addEventListener('click', (e) => {
       `;
     } else {
       container.innerHTML = this.data.courses.map(course => `
-        <div class="bg-white border border-gray-200 p-4 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
-             onclick="app.openCourse('${course.id}')">
-          <div class="flex items-start justify-between">
-            <div class="flex-1">
-              <h3 class="font-semibold text-gray-800 mb-1">${course.name}</h3>
-              ${course.description ? `<p class="text-sm text-gray-600 mb-2">${course.description}</p>` : ''}
-              <div class="flex items-center space-x-4 text-xs text-gray-500">
-                <span>${course.topics?.length || 0} topics</span>
-                <span>Created ${new Date(course.created).toLocaleDateString()}</span>
-              </div>
-            </div>
-            <div class="flex flex-col items-end space-y-2">
-              ${course.structureAnalyzed
-                ? '<span class="bg-green-100 text-green-800 px-2 py-1 rounded-full text-xs">Structured</span>'
-                : '<span class="bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full text-xs">Setup Required</span>'}
-            </div>
-          </div>
+  <div class="bg-white border border-gray-200 p-4 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
+       onclick="app.openCourse('${course.id}')">
+    <div class="flex items-start justify-between">
+      <div class="flex-1">
+        <h3 class="font-semibold text-gray-800 mb-1">${course.name}</h3>
+        ${course.description ? `<p class="text-sm text-gray-600 mb-2">${course.description}</p>` : ''}
+        <div class="flex items-center space-x-4 text-xs text-gray-500">
+          <span>${course.topics?.length || 0} topics</span>
+          <span>Created ${new Date(course.created).toLocaleDateString()}</span>
         </div>
-      `).join('');
+      </div>
+      <div class="flex flex-col items-end space-y-2">
+        ${course.structureAnalyzed
+          ? '<span class="bg-green-100 text-green-800 px-2 py-1 rounded-full text-xs">Structured</span>'
+          : '<span class="bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full text-xs">Setup Required</span>'}
+        <button class="text-red-600 text-xs hover:text-red-700"
+                onclick="app.confirmDeleteCourse('${course.id}', event)">
+          Delete
+        </button>
+      </div>
+    </div>
+  </div>
+`).join('');
     }
   }
 
@@ -449,21 +646,22 @@ document.addEventListener('click', (e) => {
     }
   }
 
- showStructurePrompt() {
-  // Toggle cards
-  const promptCard = document.getElementById('structure-prompt-card');
-  const pasteCard  = document.getElementById('paste-structure-card');
-  if (promptCard) promptCard.style.display = 'none';
-  if (pasteCard)  pasteCard.style.display  = 'block';
 
-  // Build and show modal
-  const prompt = this.getStructurePrompt();
-  if (!prompt) {
-    this.showToast('Unable to build the Structure Prompt', 'error');
-    return;
+  showStructurePrompt() {
+    // Toggle cards
+    const promptCard = document.getElementById('structure-prompt-card');
+    const pasteCard = document.getElementById('paste-structure-card');
+    if (promptCard) promptCard.style.display = 'none';
+    if (pasteCard) pasteCard.style.display = 'block';
+
+    // Build and show modal
+    const prompt = this.getStructurePrompt();
+    if (!prompt) {
+      this.showToast('Unable to build the Structure Prompt', 'error');
+      return;
+    }
+    this.showPromptModal('Course Structure Analyzer', prompt);
   }
-  this.showPromptModal('Course Structure Analyzer', prompt);
-}
   parseStructureResponse() {
     const response = document.getElementById('structure-response').value.trim();
     if (!response) {
@@ -553,12 +751,12 @@ document.addEventListener('click', (e) => {
 
   createEmptyContentSlots() {
     return {
-      summary: { status: 'empty', content: null, lastUpdated: null },
-      flashcards: { status: 'empty', content: null, lastUpdated: null, srs: { cards: {} } },
-      quiz: { status: 'empty', content: null, lastUpdated: null, attempts: [], bestScore: 0 },
-      explainer: { status: 'empty', content: null, lastUpdated: null },
-      practice: { status: 'empty', content: null, lastUpdated: null },
-      review: { status: 'empty', content: null, lastUpdated: null }
+      summary: { status: 'empty', content: null, lastUpdated: null, completed: false },
+      flashcards: { status: 'empty', content: null, lastUpdated: null, completed: false, srs: { cards: {} } },
+      quiz: { status: 'empty', content: null, lastUpdated: null, completed: false, attempts: [], bestScore: 0 },
+      explainer: { status: 'empty', content: null, lastUpdated: null, completed: false },
+      practice: { status: 'empty', content: null, lastUpdated: null, completed: false },
+      review: { status: 'empty', content: null, lastUpdated: null, completed: false }
     };
   }
 
@@ -570,39 +768,42 @@ document.addEventListener('click', (e) => {
 
     if (topics.length === 0) {
       container.innerHTML = `
-        <div class="bg-gray-100 p-4 rounded-lg text-center text-gray-500">
-          <p class="text-sm">No topics found</p>
-          <p class="text-xs mt-1">Try re-parsing the structure</p>
-        </div>
-      `;
-    } else {
-      container.innerHTML = topics.map(topic => {
-        const completed = Object.values(topic.contentSlots).filter(slot => slot.status === 'filled').length;
-        const total = Object.keys(topic.contentSlots).length;
-        const progress = Math.round((completed / total) * 100);
-        return `
-          <div class="bg-white border border-gray-200 p-4 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
-               onclick="app.openTopic('${topic.id}')">
-            <div class="flex items-start justify-between mb-2">
-              <h4 class="font-semibold text-gray-800">${topic.name}</h4>
-              <span class="bg-gray-100 text-gray-600 px-2 py-1 rounded-full text-xs">${topic.difficulty}</span>
-            </div>
-            <div class="mb-3">
-              <div class="flex items-center justify-between mb-1">
-                <span class="text-xs text-gray-600">Progress</span>
-                <span class="text-xs text-gray-600">${completed}/${total}</span>
-              </div>
-              <div class="bg-gray-200 rounded-full h-2">
-                <div class="bg-primary-500 h-2 rounded-full transition-all duration-300" style="width: ${progress}%"></div>
-              </div>
-            </div>
-            ${topic.subtopics.length > 0
-              ? `<div class="text-xs text-gray-500">Subtopics: ${topic.subtopics.map(s => s.name).join(', ')}</div>`
-              : ''}
-          </div>
-        `;
-      }).join('');
+      <div class="bg-gray-100 p-4 rounded-lg text-center text-gray-500">
+        <p class="text-sm">No topics found</p>
+        <p class="text-xs mt-1">Try re-parsing the structure</p>
+      </div>
+    `;
+      return;
     }
+
+    container.innerHTML = topics.map(topic => {
+      const completed = Object.values(topic.contentSlots || {}).filter(slot => slot.completed === true).length;
+      const total = Object.keys(topic.contentSlots || {}).length;
+      const progress = Math.round((completed / Math.max(total, 1)) * 100);
+
+      return `
+      <div class="bg-white border border-gray-200 p-4 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
+           onclick="app.openTopic('${topic.id}')">
+        <div class="flex items-start justify-between mb-2">
+          <h4 class="font-semibold text-gray-800">${topic.name}</h4>
+          <span class="bg-gray-100 text-gray-600 px-2 py-1 rounded-full text-xs">${topic.difficulty}</span>
+        </div>
+        <div class="mb-3">
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-xs text-gray-600">Progress</span>
+            <span class="text-xs text-gray-600">${completed}/${total}</span>
+          </div>
+          <div class="bg-gray-200 rounded-full h-2">
+            <div class="bg-primary-500 h-2 rounded-full transition-all duration-300" style="width: ${progress}%"></div>
+          </div>
+        </div>
+        ${topic.subtopics?.length
+          ? `<div class="text-xs text-gray-500">Subtopics: ${topic.subtopics.map(s => s.name).join(', ')}</div>`
+          : ''
+        }
+      </div>
+    `;
+    }).join('');
   }
 
   loadTopicDetail(data) {
@@ -622,10 +823,9 @@ document.addEventListener('click', (e) => {
     document.getElementById('topic-title').textContent = topic.name;
     document.getElementById('topic-difficulty').textContent = topic.difficulty;
 
-    const completed = Object.values(topic.contentSlots).filter(slot => slot.status === 'filled').length;
-    const total = Object.keys(topic.contentSlots).length;
+    const completed = Object.values(topic.contentSlots || {}).filter(slot => slot.completed === true).length;
+    const total = Object.keys(topic.contentSlots || {}).length;
     document.getElementById('topic-progress').textContent = `${completed}/${total} completed`;
-
     this.loadContentSlots(topic);
   }
 
@@ -645,46 +845,57 @@ document.addEventListener('click', (e) => {
     container.innerHTML = Object.entries(topic.contentSlots).map(([type, slot]) => {
       const t = contentTypes[type];
       const isEmpty = slot.status === 'empty';
+      const isCompleted = slot.completed === true;
+      const isReady = !isEmpty && !isCompleted;
       const btnClass = `bg-${t.color}-500 hover:bg-${t.color}-600`;
-      return `
-        <div class="bg-white border border-gray-200 p-4 rounded-lg">
-          <div class="flex items-center justify-between mb-2">
-            <div class="flex items-center space-x-2">
-              <span class="text-lg">${t.icon}</span>
-              <span class="font-medium text-gray-800">${t.name}</span>
-            </div>
-            <div class="flex items-center space-x-2">
-              ${isEmpty
-                ? `<span class="bg-gray-100 text-gray-600 px-2 py-1 rounded-full text-xs">Empty</span>`
-                : `<span class="bg-green-100 text-green-600 px-2 py-1 rounded-full text-xs">✓ Complete</span>`}
-            </div>
-          </div>
 
-          <div class="space-y-2">
-            ${isEmpty ? `
-              <button onclick="app.openContent('${type}', '${topic.id}')" class="w-full ${btnClass} text-white p-2 rounded-lg text-sm font-medium transition-colors">
-                📋 Get Prompt & Create Content
-              </button>
-            ` : `
-              <div class="flex space-x-2">
-                ${type === 'quiz' ? `
-                  <button onclick="app.openQuiz('${topic.id}')" class="flex-1 bg-purple-500 text-white p-2 rounded-lg text-sm font-medium hover:bg-purple-600 transition-colors">
-                    🎯 Take Quiz
-                  </button>
-                ` : `
-                  <button onclick="app.openContent('${type}', '${topic.id}')" class="flex-1 bg-gray-500 text-white p-2 rounded-lg text-sm font-medium hover:bg-gray-600 transition-colors">
-                    👁️ View Content
-                  </button>
-                `}
-                <button onclick="app.openContent('${type}', '${topic.id}')" class="px-3 bg-gray-300 text-gray-700 p-2 rounded-lg text-sm hover:bg-gray-400 transition-colors">✏️</button>
-              </div>
-            `}
-            ${slot.lastUpdated ? `
-              <p class="text-xs text-gray-500">Last updated: ${new Date(slot.lastUpdated).toLocaleDateString()}</p>
-            ` : ''}
+      const statusChip = isEmpty
+        ? '<span class="bg-gray-100 text-gray-600 px-2 py-1 rounded-full text-xs">Empty</span>'
+        : isCompleted
+          ? '<span class="bg-green-100 text-green-600 px-2 py-1 rounded-full text-xs">✓ Completed</span>'
+          : '<span class="bg-blue-100 text-blue-600 px-2 py-1 rounded-full text-xs">Ready</span>';
+
+      const actions = isEmpty ? `
+      <button onclick="app.openContent('${type}', '${topic.id}')" class="w-full ${btnClass} text-white p-2 rounded-lg text-sm font-medium transition-colors">
+        📋 Get Prompt & Create Content
+      </button>
+    ` : `
+      <div class="flex flex-wrap gap-2">
+        ${type === 'quiz' ? `
+          <button onclick="app.openQuiz('${topic.id}')" class="flex-1 bg-purple-500 text-white p-2 rounded-lg text-sm font-medium hover:bg-purple-600 transition-colors">
+            🎯 Take Quiz
+          </button>
+        ` : `
+          <button onclick="app.openContent('${type}', '${topic.id}')" class="flex-1 bg-gray-500 text-white p-2 rounded-lg text-sm font-medium hover:bg-gray-600 transition-colors">
+            👁️ View Content
+          </button>
+        `}
+        ${isCompleted ? `
+          <button onclick="app.unmarkContentCompleted('${type}', '${topic.id}')" class="px-3 bg-gray-300 text-gray-700 p-2 rounded-lg text-sm hover:bg-gray-400 transition-colors">Undo</button>
+        ` : `
+          <button onclick="app.markContentCompleted('${type}', '${topic.id}')" class="px-3 bg-green-500 text-white p-2 rounded-lg text-sm hover:bg-green-600 transition-colors">Mark Completed</button>
+        `}
+        <button onclick="app.openContent('${type}', '${topic.id}')" class="px-3 bg-gray-300 text-gray-700 p-2 rounded-lg text-sm hover:bg-gray-400 transition-colors">✏️</button>
+      </div>
+    `;
+
+      return `
+      <div class="bg-white border border-gray-200 p-4 rounded-lg">
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center space-x-2">
+            <span class="text-lg">${t.icon}</span>
+            <span class="font-medium text-gray-800">${t.name}</span>
+          </div>
+          <div class="flex items-center space-x-2">
+            ${statusChip}
           </div>
         </div>
-      `;
+        <div class="space-y-2">
+          ${actions}
+          ${slot.lastUpdated ? `<p class="text-xs text-gray-500">Last updated: ${new Date(slot.lastUpdated).toLocaleDateString()}</p>` : ''}
+        </div>
+      </div>
+    `;
     }).join('');
   }
 
@@ -736,58 +947,58 @@ document.addEventListener('click', (e) => {
   }
 
   parseContentResponse(response, type) {
-  const maybeJson = extractJsonFromText(response);
+    const maybeJson = extractJsonFromText(response);
 
-  if (type === 'flashcards') {
-    if (maybeJson && (maybeJson.schema_version === 'flashcards_v1' || Array.isArray(maybeJson.cards))) {
-      const cards = (maybeJson.cards || []).map((c, i) => ({
-        id: c.id || 'c' + (i + 1),
-        front: c.front || '',
-        back: c.back || '',
-        tags: c.tags || [],
-        citation_ids: c.citation_ids || []
-      }));
-      return { cards, totalCards: cards.length, schema_version: 'flashcards_v1' };
+    if (type === 'flashcards') {
+      if (maybeJson && (maybeJson.schema_version === 'flashcards_v1' || Array.isArray(maybeJson.cards))) {
+        const cards = (maybeJson.cards || []).map((c, i) => ({
+          id: c.id || 'c' + (i + 1),
+          front: c.front || '',
+          back: c.back || '',
+          tags: c.tags || [],
+          citation_ids: c.citation_ids || []
+        }));
+        return { cards, totalCards: cards.length, schema_version: 'flashcards_v1' };
+      }
+      return { error: 'Flashcards must be valid JSON (flashcards_v1). Please paste only the JSON code block.' };
     }
-    return { error: 'Flashcards must be valid JSON (flashcards_v1). Please paste only the JSON code block.' };
-  }
 
-  if (type === 'quiz') {
-    if (maybeJson && (maybeJson.schema_version === 'quiz_mcq_v1' || Array.isArray(maybeJson.items))) {
-      const questions = (maybeJson.items || []).map((item, index) => {
-        const options = item.options || [];
-        const correctIdx = options.findIndex(o => o.isCorrect === true);
-        const fb = {};
-        options.forEach((o, i) => fb[i] = o.feedback || '');
-        return {
-          id: item.id || index + 1,
-          text: item.stem || item.text || '',
-          type: 'multiple_choice',
-          difficulty: item.difficulty || 'medium',
-          options: options.map(o => o.text),
-          correctAnswer: correctIdx >= 0 ? correctIdx : null,
-          feedback: fb,
-          citation_ids: item.citation_ids || []
-        };
-      }).filter(q => q.options?.length === 4 && q.correctAnswer !== null);
-      if (questions.length === 0) return { error: 'Quiz JSON parsed but no valid items found. Ensure 4 options with one isCorrect=true and feedback.' };
-      return { questions, totalQuestions: questions.length, schema_version: 'quiz_mcq_v1' };
+    if (type === 'quiz') {
+      if (maybeJson && (maybeJson.schema_version === 'quiz_mcq_v1' || Array.isArray(maybeJson.items))) {
+        const questions = (maybeJson.items || []).map((item, index) => {
+          const options = item.options || [];
+          const correctIdx = options.findIndex(o => o.isCorrect === true);
+          const fb = {};
+          options.forEach((o, i) => fb[i] = o.feedback || '');
+          return {
+            id: item.id || index + 1,
+            text: item.stem || item.text || '',
+            type: 'multiple_choice',
+            difficulty: item.difficulty || 'medium',
+            options: options.map(o => o.text),
+            correctAnswer: correctIdx >= 0 ? correctIdx : null,
+            feedback: fb,
+            citation_ids: item.citation_ids || []
+          };
+        }).filter(q => q.options?.length === 4 && q.correctAnswer !== null);
+        if (questions.length === 0) return { error: 'Quiz JSON parsed but no valid items found. Ensure 4 options with one isCorrect=true and feedback.' };
+        return { questions, totalQuestions: questions.length, schema_version: 'quiz_mcq_v1' };
+      }
+      return { error: 'Quiz must be valid JSON (quiz_mcq_v1). Please paste only the JSON code block.' };
     }
-    return { error: 'Quiz must be valid JSON (quiz_mcq_v1). Please paste only the JSON code block.' };
-  }
 
-  // Reading types → Markdown only (no JSON allowed)
-  if (maybeJson) {
-    return { error: 'Reading content must be plain Markdown (no JSON). Please regenerate and paste Markdown only.' };
+    // Reading types → Markdown only (no JSON allowed)
+    if (maybeJson) {
+      return { error: 'Reading content must be plain Markdown (no JSON). Please regenerate and paste Markdown only.' };
+    }
+    const md = response.trim();
+    if (!md) return { error: 'Empty content. Paste Markdown only.' };
+    // quick sanity: ensure at least one heading
+    if (!/^#+\s/m.test(md)) {
+      return { error: 'Markdown must include headings (##, ###). Please format with headings and sections.' };
+    }
+    return { schema_version: 'md_v1', markdown: md };
   }
-  const md = response.trim();
-  if (!md) return { error: 'Empty content. Paste Markdown only.' };
-  // quick sanity: ensure at least one heading
-  if (!/^#+\s/m.test(md)) {
-    return { error: 'Markdown must include headings (##, ###). Please format with headings and sections.' };
-  }
-  return { schema_version: 'md_v1', markdown: md };
-}
 
   saveContent() {
     const response = document.getElementById('content-response').value.trim();
@@ -808,6 +1019,16 @@ document.addEventListener('click', (e) => {
       return;
     }
 
+    // Soft validation for reading types (warn-only)
+    if (parsed.schema_version === 'md_v1' && ['summary', 'explainer', 'practice', 'review'].includes(type)) {
+      const warnList = this.validateReadingMarkdown(parsed.markdown, type);
+      if (warnList.length) {
+        const shown = warnList.slice(0, 3).join(', ');
+        const more = warnList.length > 3 ? ` +${warnList.length - 3} more` : '';
+        this.showToast(`Heads up: missing ${shown}${more}`, 'warning');
+      }
+    }
+
     const courseIndex = this.data.courses.findIndex(c => c.id === this.data.currentCourse.id);
     const topicIndex = this.data.courses[courseIndex].topics.findIndex(t => t.id === topicId);
     if (topicIndex === -1) {
@@ -815,14 +1036,30 @@ document.addEventListener('click', (e) => {
       return;
     }
 
-    this.data.courses[courseIndex].topics[topicIndex].contentSlots[type] = {
+    const prevSlot = this.data.courses[courseIndex].topics[topicIndex].contentSlots[type] || {};
+
+    const newSlot = {
+      ...prevSlot,
       status: 'filled',
       content: parsed,
       rawResponse: response,
       lastUpdated: new Date().toISOString(),
-      attempts: type === 'quiz' ? (this.data.courses[courseIndex].topics[topicIndex].contentSlots.quiz.attempts || []) : undefined,
-      bestScore: type === 'quiz' ? (this.data.courses[courseIndex].topics[topicIndex].contentSlots.quiz.bestScore || 0) : undefined
+      // Preserve completion state
+      completed: prevSlot.completed === true
     };
+
+    // Keep quiz history fields if applicable
+    if (type === 'quiz') {
+      newSlot.attempts = Array.isArray(prevSlot.attempts) ? prevSlot.attempts : [];
+      newSlot.bestScore = Number.isFinite(prevSlot.bestScore) ? prevSlot.bestScore : 0;
+    }
+
+    // Keep flashcards SRS state if re-saving
+    if (type === 'flashcards') {
+      newSlot.srs = prevSlot.srs || { cards: {} };
+    }
+
+    this.data.courses[courseIndex].topics[topicIndex].contentSlots[type] = newSlot;
 
     this.saveData(false);
     this.showToast('Content saved successfully!', 'success');
@@ -843,19 +1080,19 @@ document.addEventListener('click', (e) => {
     document.getElementById('paste-content-section').style.display = 'none';
   }
 
-displayParsedContent(content, type) {
-  const container = document.getElementById('parsed-content');
-  if (!container) return;
+  displayParsedContent(content, type) {
+    const container = document.getElementById('parsed-content');
+    if (!container) return;
 
-  // Markdown reading content
-  if (content?.schema_version === 'md_v1') {
-    container.innerHTML = this.renderMarkdown(content.markdown || '');
-    return;
-  }
+    // Markdown reading content
+    if (content?.schema_version === 'md_v1') {
+      container.innerHTML = this.renderMarkdown(content.markdown || '');
+      return;
+    }
 
-  // Quiz overview (from JSON)
-  if (type === 'quiz' && content?.questions) {
-    container.innerHTML = `
+    // Quiz overview (from JSON)
+    if (type === 'quiz' && content?.questions) {
+      container.innerHTML = `
       <div class="bg-purple-50 p-4 rounded-lg mb-4">
         <h3 class="font-semibold text-purple-800 mb-2">Quiz Overview</h3>
         <p class="text-sm text-purple-600">Total Questions: ${content.totalQuestions || content.questions.length}</p>
@@ -877,14 +1114,14 @@ displayParsedContent(content, type) {
         ${content.questions.length > 3 ? `<p class="text-sm text-gray-500 text-center">... and ${content.questions.length - 3} more questions</p>` : ''}
       </div>
     `;
-    return;
-  }
+      return;
+    }
 
-  // Flashcards overview (from JSON)
- if (content?.cards) {
-  const total = content.totalCards || content.cards.length;
-  const currentTopicId = this.data.currentTopic?.id || '';
-  container.innerHTML = `
+    // Flashcards overview (from JSON)
+    if (content?.cards) {
+      const total = content.totalCards || content.cards.length;
+      const currentTopicId = this.data.currentTopic?.id || '';
+      container.innerHTML = `
     <div class="bg-green-50 p-4 rounded-lg mb-4">
       <div class="flex items-center justify-between">
         <div>
@@ -915,12 +1152,12 @@ displayParsedContent(content, type) {
       ${total > 5 ? `<p class="text-sm text-gray-500 text-center">... and ${total - 5} more cards</p>` : ''}
     </div>
   `;
-  return;
-}
+      return;
+    }
 
-  // Fallback
-  container.innerHTML = `<div class="text-gray-700 whitespace-pre-wrap">${(content?.content || '').trim()}</div>`;
-}
+    // Fallback
+    container.innerHTML = `<div class="text-gray-700 whitespace-pre-wrap">${(content?.content || '').trim()}</div>`;
+  }
   // Legacy parsers (fallbacks)
   parseQuizLegacy(response) {
     const lines = response.split('\n');
@@ -1057,7 +1294,8 @@ displayParsedContent(content, type) {
       status: 'empty',
       content: null,
       rawResponse: null,
-      lastUpdated: null
+      lastUpdated: null,
+      completed: false
     };
     this.saveData(false);
     this.showToast('Content deleted successfully', 'success');
@@ -1067,229 +1305,229 @@ displayParsedContent(content, type) {
     this.loadContentSlots(this.data.currentTopic);
   }
   // ===== Flashcards Study (SRS) =====
-openFlashcardsStudy(topicId = null) {
-  // Find topic and course if needed
-  let topic = topicId ? this.findTopicById(this.data.currentCourse, topicId) : this.data.currentTopic;
+  openFlashcardsStudy(topicId = null) {
+    // Find topic and course if needed
+    let topic = topicId ? this.findTopicById(this.data.currentCourse, topicId) : this.data.currentTopic;
 
-  if (!topic && topicId) {
-    // Try to find its course if currentCourse is not set
-    const course = this.data.courses.find(c => (c.topics || []).some(t => t.id === topicId));
-    if (course) {
-      this.data.currentCourse = course;
-      topic = this.findTopicById(course, topicId);
+    if (!topic && topicId) {
+      // Try to find its course if currentCourse is not set
+      const course = this.data.courses.find(c => (c.topics || []).some(t => t.id === topicId));
+      if (course) {
+        this.data.currentCourse = course;
+        topic = this.findTopicById(course, topicId);
+      }
+    }
+    if (!topic) { this.showToast('Topic not found', 'error'); return; }
+
+    const slot = topic.contentSlots?.flashcards;
+    if (!slot || slot.status === 'empty' || !slot.content?.cards?.length) {
+      this.showToast('No flashcards available. Create flashcards first.', 'error');
+      return;
+    }
+
+    const modal = document.getElementById('flashcards-modal');
+    if (!modal) {
+      this.showToast('Flashcards modal not found in HTML. Add the modal block to your page.', 'error');
+      console.warn('Missing #flashcards-modal. Did you paste the modal HTML?');
+      return;
+    }
+
+    // Ensure SRS map
+    slot.srs = slot.srs || { cards: {} };
+    const srs = slot.srs.cards;
+
+    const cards = slot.content.cards;
+    const today = this._today();
+    const isDue = (c) => {
+      const st = srs[c.id];
+      if (!st) return true;
+      return !st.due || st.due <= today;
+      // Consider "new or due" as priority
+    };
+    const due = cards.filter(isDue);
+    const later = cards.filter(c => !isDue(c));
+    const deck = [...due, ...later];
+
+    this._flash = {
+      topicId: topic.id,
+      srsRef: srs,
+      deck,
+      index: 0,
+      showBack: false,
+      seen: 0,
+      correct: 0,
+      total: deck.length
+    };
+
+    this._wireFlashModal();
+
+    // Show modal
+    modal.classList.remove('hidden');
+    modal.style.display = 'block';
+
+    this._renderFlashcard();
+  }
+
+  closeFlashcardsStudy() {
+    const modal = document.getElementById('flashcards-modal');
+    if (modal) {
+      modal.classList.add('hidden');
+      modal.style.display = 'none';
+    }
+    this._flash = null;
+    // Persist SRS state
+    this.saveData(false);
+  }
+
+  _flipFlashcard() {
+    if (!this._flash) return;
+    this._flash.showBack = !this._flash.showBack;
+    this._renderFlashcardFaces();
+  }
+
+  _nextFlashcard() {
+    if (!this._flash) return;
+    if (this._flash.index < this._flash.total - 1) {
+      this._flash.index++;
+      this._flash.showBack = false;
+      this._renderFlashcard();
+    } else {
+      this.showToast('Session complete 🎉', 'success');
+      this.closeFlashcardsStudy();
     }
   }
-  if (!topic) { this.showToast('Topic not found', 'error'); return; }
 
-  const slot = topic.contentSlots?.flashcards;
-  if (!slot || slot.status === 'empty' || !slot.content?.cards?.length) {
-    this.showToast('No flashcards available. Create flashcards first.', 'error');
-    return;
+  _prevFlashcard() {
+    if (!this._flash) return;
+    if (this._flash.index > 0) {
+      this._flash.index--;
+      this._flash.showBack = false;
+      this._renderFlashcard();
+    }
   }
 
-  const modal = document.getElementById('flashcards-modal');
-  if (!modal) {
-    this.showToast('Flashcards modal not found in HTML. Add the modal block to your page.', 'error');
-    console.warn('Missing #flashcards-modal. Did you paste the modal HTML?');
-    return;
+  _gradeFlashcard(quality) {
+    // quality: 1=Again, 3=Hard, 4=Good, 5=Easy
+    if (!this._flash) return;
+    const { deck, index, srsRef } = this._flash;
+    const card = deck[index];
+    const st = srsRef[card.id] || { ease: 2.5, reps: 0, interval: 0, due: this._today(), lastGrade: null };
+
+    // SM-2 like update
+    const q = quality;
+    if (q < 3) {
+      st.reps = 0;
+      st.interval = 0;
+      st.due = this._today(); // show again (but not immediate—reinsert in-session)
+    } else {
+      if (st.reps === 0) { st.interval = 1; }
+      else if (st.reps === 1) { st.interval = 6; }
+      else { st.interval = Math.round(st.interval * st.ease); }
+      st.reps += 1;
+      // ease update
+      st.ease = Math.max(1.3, st.ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)));
+      st.due = this._addDays(st.interval);
+    }
+    st.lastGrade = q;
+    srsRef[card.id] = st;
+
+    // In-session handling: reinsert "Again" soon so learner sees it quickly again
+    if (q < 3) {
+      const insertPos = Math.min(this._flash.index + 2, this._flash.deck.length);
+      // Push a shallow copy to repeat in-session
+      this._flash.deck.splice(insertPos, 0, card);
+      this._flash.total = this._flash.deck.length;
+    } else {
+      this._flash.correct += 1;
+    }
+
+    this._flash.seen = Math.max(this._flash.seen, this._flash.index + 1);
+    this.saveData(false);
+    this._renderFlashFooterInfo();
+    this._nextFlashcard();
   }
 
-  // Ensure SRS map
-  slot.srs = slot.srs || { cards: {} };
-  const srs = slot.srs.cards;
+  _renderFlashcard() {
+    if (!this._flash) return;
+    const { deck, index, total } = this._flash;
 
-  const cards = slot.content.cards;
-  const today = this._today();
-  const isDue = (c) => {
-    const st = srs[c.id];
-    if (!st) return true;
-    return !st.due || st.due <= today;
-    // Consider "new or due" as priority
-  };
-  const due = cards.filter(isDue);
-  const later = cards.filter(c => !isDue(c));
-  const deck = [...due, ...later];
+    // Counts + progress
+    const countsEl = document.getElementById('flash-counts');
+    if (countsEl) countsEl.textContent = `${Math.min(this._flash.seen, index)}/${total}`;
 
-  this._flash = {
-    topicId: topic.id,
-    srsRef: srs,
-    deck,
-    index: 0,
-    showBack: false,
-    seen: 0,
-    correct: 0,
-    total: deck.length
-  };
+    const progress = Math.round(((index) / Math.max(total, 1)) * 100);
+    const bar = document.getElementById('flash-progress-bar');
+    const ptext = document.getElementById('flash-progress-text');
+    if (bar) bar.style.width = `${progress}%`;
+    if (ptext) ptext.textContent = `${progress}% complete`;
 
-  this._wireFlashModal();
+    // Face content
+    this._renderFlashcardFaces();
 
-  // Show modal
-  modal.classList.remove('hidden');
-  modal.style.display = 'block';
-
-  this._renderFlashcard();
-}
-
-closeFlashcardsStudy() {
-  const modal = document.getElementById('flashcards-modal');
-  if (modal) {
-    modal.classList.add('hidden');
-    modal.style.display = 'none';
-  }
-  this._flash = null;
-  // Persist SRS state
-  this.saveData(false);
-}
-
-_flipFlashcard() {
-  if (!this._flash) return;
-  this._flash.showBack = !this._flash.showBack;
-  this._renderFlashcardFaces();
-}
-
-_nextFlashcard() {
-  if (!this._flash) return;
-  if (this._flash.index < this._flash.total - 1) {
-    this._flash.index++;
-    this._flash.showBack = false;
-    this._renderFlashcard();
-  } else {
-    this.showToast('Session complete 🎉', 'success');
-    this.closeFlashcardsStudy();
-  }
-}
-
-_prevFlashcard() {
-  if (!this._flash) return;
-  if (this._flash.index > 0) {
-    this._flash.index--;
-    this._flash.showBack = false;
-    this._renderFlashcard();
-  }
-}
-
-_gradeFlashcard(quality) {
-  // quality: 1=Again, 3=Hard, 4=Good, 5=Easy
-  if (!this._flash) return;
-  const { deck, index, srsRef } = this._flash;
-  const card = deck[index];
-  const st = srsRef[card.id] || { ease: 2.5, reps: 0, interval: 0, due: this._today(), lastGrade: null };
-
-  // SM-2 like update
-  const q = quality;
-  if (q < 3) {
-    st.reps = 0;
-    st.interval = 0;
-    st.due = this._today(); // show again (but not immediate—reinsert in-session)
-  } else {
-    if (st.reps === 0) { st.interval = 1; }
-    else if (st.reps === 1) { st.interval = 6; }
-    else { st.interval = Math.round(st.interval * st.ease); }
-    st.reps += 1;
-    // ease update
-    st.ease = Math.max(1.3, st.ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)));
-    st.due = this._addDays(st.interval);
-  }
-  st.lastGrade = q;
-  srsRef[card.id] = st;
-
-  // In-session handling: reinsert "Again" soon so learner sees it quickly again
-  if (q < 3) {
-    const insertPos = Math.min(this._flash.index + 2, this._flash.deck.length);
-    // Push a shallow copy to repeat in-session
-    this._flash.deck.splice(insertPos, 0, card);
-    this._flash.total = this._flash.deck.length;
-  } else {
-    this._flash.correct += 1;
+    // Footer info (due, etc.)
+    this._renderFlashFooterInfo();
   }
 
-  this._flash.seen = Math.max(this._flash.seen, this._flash.index + 1);
-  this.saveData(false);
-  this._renderFlashFooterInfo();
-  this._nextFlashcard();
-}
+  _renderFlashcardFaces() {
+    const { deck, index, showBack } = this._flash;
+    const card = deck[index];
+    const frontEl = document.getElementById('flash-front');
+    const backEl = document.getElementById('flash-back');
 
-_renderFlashcard() {
-  if (!this._flash) return;
-  const { deck, index, total } = this._flash;
+    if (frontEl) frontEl.textContent = card.front || '';
+    if (backEl) backEl.textContent = card.back || '';
 
-  // Counts + progress
-  const countsEl = document.getElementById('flash-counts');
-  if (countsEl) countsEl.textContent = `${Math.min(this._flash.seen, index)}/${total}`;
-
-  const progress = Math.round(((index) / Math.max(total, 1)) * 100);
-  const bar = document.getElementById('flash-progress-bar');
-  const ptext = document.getElementById('flash-progress-text');
-  if (bar) bar.style.width = `${progress}%`;
-  if (ptext) ptext.textContent = `${progress}% complete`;
-
-  // Face content
-  this._renderFlashcardFaces();
-
-  // Footer info (due, etc.)
-  this._renderFlashFooterInfo();
-}
-
-_renderFlashcardFaces() {
-  const { deck, index, showBack } = this._flash;
-  const card = deck[index];
-  const frontEl = document.getElementById('flash-front');
-  const backEl  = document.getElementById('flash-back');
-
-  if (frontEl) frontEl.textContent = card.front || '';
-  if (backEl)  backEl.textContent  = card.back  || '';
-
-  if (showBack) {
-    backEl?.classList.remove('hidden');
-    frontEl?.classList.add('hidden');
-  } else {
-    frontEl?.classList.remove('hidden');
-    backEl?.classList.add('hidden');
+    if (showBack) {
+      backEl?.classList.remove('hidden');
+      frontEl?.classList.add('hidden');
+    } else {
+      frontEl?.classList.remove('hidden');
+      backEl?.classList.add('hidden');
+    }
   }
-}
 
-_renderFlashFooterInfo() {
-  const info = document.getElementById('flash-due-info');
-  if (!info || !this._flash) return;
-  const { deck, index, srsRef } = this._flash;
-  const card = deck[index];
-  const st = srsRef[card.id];
-  if (!st) { info.textContent = 'New card'; return; }
-  info.textContent = `Ease ${st.ease.toFixed(2)} • Interval ${st.interval}d • Due ${st.due}`;
-}
+  _renderFlashFooterInfo() {
+    const info = document.getElementById('flash-due-info');
+    if (!info || !this._flash) return;
+    const { deck, index, srsRef } = this._flash;
+    const card = deck[index];
+    const st = srsRef[card.id];
+    if (!st) { info.textContent = 'New card'; return; }
+    info.textContent = `Ease ${st.ease.toFixed(2)} • Interval ${st.interval}d • Due ${st.due}`;
+  }
 
-_wireFlashModal() {
-  if (this._flashWired) return;
-  this._flashWired = true;
+  _wireFlashModal() {
+    if (this._flashWired) return;
+    this._flashWired = true;
 
-  document.addEventListener('keydown', (e) => {
-  if (!this._flash) return;
-  if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); this._flipFlashcard(); }
-  else if (e.key === 'ArrowRight') this._nextFlashcard();
-  else if (e.key === 'ArrowLeft')  this._prevFlashcard();
-});
-  document.getElementById('flashcard-face')?.addEventListener('click', () => this._flipFlashcard());
-  document.getElementById('flash-close-btn')?.addEventListener('click', () => this.closeFlashcardsStudy());
-  document.getElementById('flash-flip-btn')?.addEventListener('click', () => this._flipFlashcard());
-  document.getElementById('flash-next-btn')?.addEventListener('click', () => this._nextFlashcard());
-  document.getElementById('flash-prev-btn')?.addEventListener('click', () => this._prevFlashcard());
+    document.addEventListener('keydown', (e) => {
+      if (!this._flash) return;
+      if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); this._flipFlashcard(); }
+      else if (e.key === 'ArrowRight') this._nextFlashcard();
+      else if (e.key === 'ArrowLeft') this._prevFlashcard();
+    });
+    document.getElementById('flashcard-face')?.addEventListener('click', () => this._flipFlashcard());
+    document.getElementById('flash-close-btn')?.addEventListener('click', () => this.closeFlashcardsStudy());
+    document.getElementById('flash-flip-btn')?.addEventListener('click', () => this._flipFlashcard());
+    document.getElementById('flash-next-btn')?.addEventListener('click', () => this._nextFlashcard());
+    document.getElementById('flash-prev-btn')?.addEventListener('click', () => this._prevFlashcard());
 
-  document.getElementById('flash-grade-again')?.addEventListener('click', () => this._gradeFlashcard(1));
-  document.getElementById('flash-grade-hard') ?.addEventListener('click', () => this._gradeFlashcard(3));
-  document.getElementById('flash-grade-good') ?.addEventListener('click', () => this._gradeFlashcard(4));
-  document.getElementById('flash-grade-easy') ?.addEventListener('click', () => this._gradeFlashcard(5));
-}
+    document.getElementById('flash-grade-again')?.addEventListener('click', () => this._gradeFlashcard(1));
+    document.getElementById('flash-grade-hard')?.addEventListener('click', () => this._gradeFlashcard(3));
+    document.getElementById('flash-grade-good')?.addEventListener('click', () => this._gradeFlashcard(4));
+    document.getElementById('flash-grade-easy')?.addEventListener('click', () => this._gradeFlashcard(5));
+  }
 
-// Date helpers
-_today() {
-  const d = new Date();
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD
-}
-_addDays(n) {
-  const d = new Date();
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
-}
+  // Date helpers
+  _today() {
+    const d = new Date();
+    return d.toISOString().slice(0, 10); // YYYY-MM-DD
+  }
+  _addDays(n) {
+    const d = new Date();
+    d.setDate(d.getDate() + n);
+    return d.toISOString().slice(0, 10);
+  }
 
   // Quiz (MCQ-only)
   loadQuizView(data) {
@@ -1422,7 +1660,7 @@ _addDays(n) {
     this.updateQuizProgress();
   }
 
-   showQuizFeedback(isCorrect, question, selectedIndex) {
+  showQuizFeedback(isCorrect, question, selectedIndex) {
     const feedback = question.feedback?.[selectedIndex] || '';
     const correctOpt = question.options[question.correctAnswer];
 
@@ -1482,9 +1720,18 @@ _addDays(n) {
 
     slot.attempts = slot.attempts || [];
     slot.attempts.push(attempt);
+
+    // Update bestScore first
     slot.bestScore = Math.max(slot.bestScore || 0, percentage);
+
+    // Auto-complete if bestScore meets threshold (covers current or past attempts)
+    if (slot.bestScore >= this.quizMasteryThreshold) {
+      slot.completed = true;
+    }
+
     slot.lastUpdated = new Date().toISOString();
     this.saveData(false);
+
 
     // Show results
     const mm = Math.floor(timeSpent / 60);
@@ -1584,45 +1831,42 @@ _addDays(n) {
 
   // Prompts and modal
   getStructurePrompt() {
-    return `You are an expert academic analyzer. Create a structured breakdown using EXACT markers:
+    return `You are an expert academic analyzer. Create a topic structure for the chapter/course below using EXACT markers only. NO extra commentary or text outside these markers.
 
-## COURSE_STRUCTURE_START: [Course Name]
-
+Required markers:
+## COURSE_STRUCTURE_START: [Course or Chapter Name]
 ### TOPIC_START: [Topic Name] ## DIFFICULTY: [Beginner/Intermediate/Advanced] ## CATEGORY: [Category]
-#### SUBTOPIC: [Subtopic Name] ## CONCEPTS: [Key concept 1, Key concept 2]
+#### SUBTOPIC: [Subtopic Name] ## CONCEPTS: [Concept 1, Concept 2, Concept 3]
 ### TOPIC_END
-
 ## COURSE_STRUCTURE_END
 
 Rules:
-1) Use the exact markers (TOPIC_START, SUBTOPIC, DIFFICULTY, CATEGORY, CONCEPTS).
-2) Be comprehensive and ordered logically.
-3) No extra commentary.`;
+- Use the exact markers and casing shown.
+- Include ALL major topics and key subtopics.
+- Keep it comprehensive and logically ordered.`;
   }
 
   getContentPrompt(type, topic) {
-  const p = this.data.settings.personalization || { depth: 'standard', examples: 'medium', rigor: 'light', readTime: 10 };
-  const courseName = this.data.currentCourse?.name || 'Course';
-  const topicName  = topic?.name || '[TOPIC NAME]';
-  const personalize = `Personalization: depth=${p.depth}, examples=${p.examples}, rigor=${p.rigor}, target_read_time=${p.readTime}min`;
+    const p = this.data.settings.personalization || { depth: 'standard', examples: 'medium', rigor: 'light', readTime: 10 };
+    const courseName = this.data.currentCourse?.name || 'Course';
+    const topicName = topic?.name || '[TOPIC NAME]';
+    const personalize = `Personalization: depth=${p.depth}, examples=${p.examples}, rigor=${p.rigor}, target_read_time=${p.readTime}min, audience_difficulty=${p.difficulty || 'Intermediate'}, citation=${p.citation || 'minimal'}`;
 
-  // Helper: build MUST COVER + coverage checklist from subtopics/concepts
-  const hasSubs = Array.isArray(topic?.subtopics) && topic.subtopics.length > 0;
-  const mustCoverLines = hasSubs
-    ? topic.subtopics.map(s => {
+    // Helper: MUST COVER from subtopics/concepts (if available)
+    const hasSubs = Array.isArray(topic?.subtopics) && topic.subtopics.length > 0;
+    const mustCoverLines = hasSubs
+      ? topic.subtopics.map(s => {
         const conceptList = Array.isArray(s.concepts) && s.concepts.length
           ? `: ${s.concepts.join(', ')}`
           : '';
         return `- ${s.name}${conceptList}`;
       }).join('\n')
-    : '';
+      : '';
+    const mustCoverBlock = hasSubs ? `\nMUST COVER (from course structure):\n${mustCoverLines}\n` : '';
 
-  const coverageChecklist = hasSubs
-    ? topic.subtopics.map(s => `- [ ] ${s.name} (covered) — cite page(s): …`).join('\n')
-    : `- [ ] All major sections (covered) — cite\n- [ ] All key formulas/rules (covered) — cite\n- [ ] Worked examples (covered) — cite`;
-
-  if (type === 'flashcards') {
-    return `ROLE: Flashcard expert. Create 18–24 high-quality cards for ${courseName} • "${topicName}".
+    if (type === 'flashcards') {
+      const n = (p.flashcardsCount || 15);
+      return `ROLE: Flashcard expert. Create exactly ${n} high-quality flashcards for ${courseName} • "${topicName}".
 
 OUTPUT STRICTLY AS A SINGLE FENCED JSON BLOCK (no text outside the block):
 \`\`\`json
@@ -1632,13 +1876,12 @@ OUTPUT STRICTLY AS A SINGLE FENCED JSON BLOCK (no text outside the block):
   "cards": [
     {"id": "c1", "front": "Term or question...", "back": "Concise answer with example.", "tags": ["definition"], "citation_ids": []}
   ],
-  "total": 20
+  "total": ${n}
 }
 \`\`\``;
-  }
-
-  if (type === 'quiz') {
-    return `ROLE: Assessment designer. Create a 10-item MCQ quiz for ${courseName} • "${topicName}".
+    }
+    if (type === 'quiz') {
+      return `ROLE: Assessment designer. Create a 10-item MCQ quiz for ${courseName} • "${topicName}".
 Constraints: JSON ONLY (quiz_mcq_v1). Exactly 4 options per item, single correct. Every option has feedback.
 
 \`\`\`json
@@ -1663,33 +1906,15 @@ Constraints: JSON ONLY (quiz_mcq_v1). Exactly 4 options per item, single correct
   "metadata": {"count": 10}
 }
 \`\`\``;
-  }
+    }
 
-  if (type === 'summary') {
-  const hasSubs = Array.isArray(topic?.subtopics) && topic.subtopics.length > 0;
-  const mustCoverLines = hasSubs
-    ? topic.subtopics.map(s => {
-        const conceptList = Array.isArray(s.concepts) && s.concepts.length
-          ? `: ${s.concepts.join(', ')}`
-          : '';
-        return `- ${s.name}${conceptList}`;
-      }).join('\n')
-    : '';
+    // Markdown prompts (Summary, Explainer, Practice, Review)
+    if (type === 'summary') {
+      const coverageChecklist = hasSubs
+        ? topic.subtopics.map(s => `- [ ] ${s.name} — cite page(s): (p. … / pp. …)`).join('\n')
+        : `- [ ] All major sections — cite page(s) if needed\n- [ ] All key formulas/rules — cite page(s)\n- [ ] Worked examples — cite page(s)`;
 
-  const mustCoverBlock = hasSubs
-    ? `\nMUST COVER (from course structure):\n${mustCoverLines}\n`
-    : '';
-
-  const coverageChecklist = hasSubs
-    ? topic.subtopics.map(s => `- [ ] ${s.name} — cite page(s): (p. … / pp. …)`).join('\n')
-    : `- [ ] All major sections — cite page(s) if needed\n- [ ] All key formulas/rules — cite page(s)\n- [ ] Worked examples — cite page(s)`;
-
-  const p = this.data.settings.personalization || { depth: 'standard', examples: 'medium', rigor: 'light', readTime: 10 };
-  const courseName = this.data.currentCourse?.name || 'Course';
-  const topicName  = topic?.name || '[TOPIC NAME]';
-  const personalize = `Personalization: depth=${p.depth}, examples=${p.examples}, rigor=${p.rigor}, target_read_time=${p.readTime}min`;
-
-  return `ROLE: Expert subject-matter educator. Write a complete, textbook-quality teaching text that can replace reading the source chapter for the topic: "${topicName}" in "${courseName}".
+      return `ROLE: Expert subject-matter educator. Write a complete, textbook-quality teaching text that can replace reading the source chapter for the topic: "${topicName}" in "${courseName}".
 
 SOURCE OF TRUTH:
 - Use the uploaded chapter as your source.
@@ -1697,7 +1922,7 @@ SOURCE OF TRUTH:
 
 CITATION STYLE (plain text only):
 - Use parentheses only, e.g., (p. 199), (pp. 199–201), (Sec. 3.2). No brackets, no tags, no links.
-- Cite sparingly: at most one citation per paragraph, only when introducing a specific claim/definition/formula. Prefer placing it at the end of the paragraph.
+- Cite sparingly: at most one citation per paragraph when introducing a specific claim/definition/formula.
 
 ${mustCoverBlock}${personalize}
 
@@ -1752,99 +1977,126 @@ For each ${hasSubs ? 'subtopic in MUST COVER' : 'major concept from the chapter'
 
 ### Coverage Checklist (verify nothing was missed)
 ${coverageChecklist}`;
-}
-  if (type === 'explainer') {
-    return `ROLE: Expert tutor known for clarity. Explain the concept "[CONCEPT NAME]" within "${topicName}" from ${courseName}.
+    }
+
+    if (type === 'explainer') {
+      return `ROLE: Expert tutor known for clarity. Produce an in-depth explanation for concept(s) within the topic "${topicName}" in "${courseName}".
+
+INPUT (may be empty):
+- Concept list: [concept_1, concept_2, …] (0–N)
+- If no list is provided, select the 1–3 most important or challenging concepts in this topic.
+
+CITATION STYLE (plain text only; sparingly):
+- (p. 199), (pp. 199–201), (Sec. 3.2).
+
 ${personalize}
-If no concept is specified, select the 1–2 most challenging concepts in this topic.
-Constraints: Markdown only.
 
-## [CONCEPT NAME] - Complete Explanation
+CONSTRAINTS AND FLEXIBILITY:
+- Markdown only. No JSON. No code fences.
+- Include only sections that add value; merge or omit trivial parts.
+- Use simple language first, then formal terms.
 
-### Simple Definition
-- Everyday-language explanation before technical terms
+## ${topicName} — Concept Explainers
 
-### Step-by-Step Breakdown
-- Decompose into parts, explain each, show how they connect
+For each concept in the list (or auto-selected):
+### [Concept Name]
+- Simple Definition (everyday language, then technical)
+- Step-by-Step Breakdown (decompose and connect parts)
+- Analogies (1–2 concise analogies) (optional)
+- Visual Description (what a diagram/mental image would look like) (optional)
+- Worked Example (step-by-step)
+- Common Questions and Answers (anticipate confusions)
+- Pitfalls and Clarifications (what to avoid; why)
+- Why It Matters (bigger picture, connections)
+- Optional: Cite page/section for key facts (p. … / Sec. …)
 
-### Multiple Analogies
-- 2–3 analogies using familiar situations
+### Connections Across Concepts (optional)
+- How these concepts relate to each other and to nearby topics
 
-### Visual Description
-- What a diagram/mental image would look like
+### Self-Check (answers inline)
+1) Question…
+   Answer: …
+2) Question…
+   Answer: …`;
+    }
 
-### Common Student Questions
-- Anticipated questions with clear answers
+    if (type === 'practice') {
+      return `ROLE: Problem creator for "${courseName}". Generate scaffolded practice for "${topicName}".
 
-### Practice Application
-- A small worked example showing the concept in action
+CITATION STYLE (optional, plain text): (p. 199), (pp. 199–201), (Sec. 3.2)
 
-### Why It Matters
-- Bigger picture, relevance, and connections`;
-  }
-
-  if (type === 'practice') {
-    return `ROLE: Problem creator for ${courseName}. Generate scaffolded practice for "${topicName}".
 ${personalize}
-Constraints: Markdown only.
+
+CONSTRAINTS AND FLEXIBILITY:
+- Markdown only. No JSON. No code fences.
+- Include only sections that add value. Merge/omit as appropriate.
+- Every problem must include a step-by-step solution and the concept it reinforces.
 
 ## ${topicName} Practice Problems
 
 ### Warm-Up Problems (3–4)
-**Problem 1:** [basic application]
-*Solution:* [step-by-step]
-*Key Concept:* [what it practices]
+- Problem n: [basic application]
+- Solution: [step-by-step]
+- Key Concept: [what it practices]
+- Common Mistakes: [bullets]
 
 ### Standard Problems (4–6)
-**Problem X:** [typical difficulty]
-*Hints:* [guidance if stuck]
-*Solution:* [detailed]
+- Problem n: [typical difficulty]
+- Hints: [guidance if stuck] (optional)
+- Solution: [detailed]
+- Common Mistakes: [bullets]
 
 ### Challenge Problems (2–3)
-**Problem Y:** [multi-step or tricky]
-*Approach:* [strategy]
-*Solution:* [complete with reasoning]
+- Problem n: [multi-step or tricky]
+- Approach: [strategy]
+- Solution: [complete with reasoning]
 
 ### Application Problems (2–3)
-**Problem Z:** [real-world scenario]
-*Analysis:* [how to approach]
-*Solution:* [practical solution]
+- Problem n: [real-world scenario]
+- Analysis: [how to approach]
+- Solution: [practical solution]`;
+    }
 
-For each problem include: clear statement, any data, step-by-step solution, common mistakes, and the reinforced concepts.`;
-  }
+    if (type === 'review') {
+      return `ROLE: Instructor preparing a full review for "${topicName}" in "${courseName}".
 
-  if (type === 'review') {
-    return `ROLE: Instructor preparing a full review for "${topicName}" in ${courseName}.
+CITATION STYLE (optional, plain text): (p. 199), (pp. 199–201), (Sec. 3.2)
+
 ${personalize}
-Constraints: Markdown only.
 
-## ${topicName} - Complete Review Session
+CONSTRAINTS AND FLEXIBILITY:
+- Markdown only. No JSON. No code fences.
+- Include only sections that add value; adapt headings as needed.
+- Answers inline (no <details> blocks).
+
+## ${topicName} — Complete Review Session
 
 ### Topic Mastery Checklist
-□ [Key concept] - Can you explain it clearly?
-□ [Key concept] - Can you give an example?
-□ [Key concept] - Can you solve problems with this?
+□ [Key concept] — Can you explain this clearly?
+□ [Key concept] — Can you give an example?
+□ [Key concept] — Can you solve problems with this?
 
 ### Quick Reference Sheet
 **Must-Know Facts**
 - [Fact 1]
 - [Fact 2]
 
-**Essential Formulas/Rules**
-- [Formula]: When to use it
-- [Formula]: Common applications
+**Essential Formulas/Rules** (include only if applicable)
+- [Formula] — when to use, common pitfalls
+- [Formula] — when to use, common pitfalls
 
 **Key Terminology**
-- [Term]: [Definition]
+- [Term] — [Concise definition]
 
-### Self-Assessment Questions
-1) [Question]
-2) [Question]
-3) [Question]
+### Self-Assessment Questions (answers inline)
+1) Question…
+   Answer: …
+2) Question…
+   Answer: …
 
-### Common Exam Questions on This Topic
-- Type: [Question style + example]
-- Type: [Question style + example]
+### Common Exam Questions on This Topic (optional)
+- Type: [style + example]
+- Type: [style + example]
 
 ### Final Review Tips
 - [Study tip]
@@ -1852,81 +2104,81 @@ Constraints: Markdown only.
 - [Common traps to avoid]
 
 ### Topic Connections
-- Builds on: [Previous topics]
-- Leads to: [Future topics]
-- Related concepts: [Cross-links]`;
-  }
+- Builds on: …
+- Leads to: …
+- Related concepts: …`;
+    }
 
-  // Fallback → Summary style
-  return `ROLE: Expert tutor. Create a complete topic summary for "${topicName}" from ${courseName}.
+    // Fallback → Summary-like template
+    return `ROLE: Expert tutor. Create a complete topic summary for "${topicName}" from ${courseName}.
 ${personalize}
-Markdown only. Include: Core Sections, Applications, Edge Cases, Quick Reference, TL;DR, Self-Check, Coverage Checklist with citations.`;
-}
-// --- Prompt modal helpers ---
-showPromptModal(title, prompt) {
-  const modal   = document.getElementById('prompt-modal');
-  const titleEl = document.getElementById('prompt-modal-title');
-  const textEl  = document.getElementById('prompt-text');
+Markdown only. Flexible sections; include Core Sections, Quick Reference, TL;DR, Self-Check (answers inline), and a Coverage Checklist if applicable.`;
+  }
+  // --- Prompt modal helpers ---
+  showPromptModal(title, prompt) {
+    const modal = document.getElementById('prompt-modal');
+    const titleEl = document.getElementById('prompt-modal-title');
+    const textEl = document.getElementById('prompt-text');
 
-  if (!modal || !titleEl || !textEl) {
-    console.warn('Prompt modal elements not found; falling back to alert.');
-    alert(prompt);
-    return;
+    if (!modal || !titleEl || !textEl) {
+      console.warn('Prompt modal elements not found; falling back to alert.');
+      alert(prompt);
+      return;
+    }
+
+    titleEl.textContent = title;
+    textEl.value = prompt;
+
+    modal.classList.remove('hidden');
+    modal.style.display = 'block';
+    modal.style.zIndex = '9999';
+    modal.setAttribute('aria-hidden', 'false');
   }
 
-  titleEl.textContent = title;
-  textEl.value = prompt;
-
-  modal.classList.remove('hidden');
-  modal.style.display = 'block';
-  modal.style.zIndex = '9999';
-  modal.setAttribute('aria-hidden', 'false');
-}
-
-hidePromptModal() {
-  const modal = document.getElementById('prompt-modal');
-  if (!modal) return;
-  modal.classList.add('hidden');
-  modal.style.display = 'none';
-  modal.setAttribute('aria-hidden', 'true');
-}
-
-copyPromptToClipboard() {
-  const ta = document.getElementById('prompt-text');
-  if (!ta) {
-    this.showToast('Prompt area not found', 'error');
-    return;
+  hidePromptModal() {
+    const modal = document.getElementById('prompt-modal');
+    if (!modal) return;
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
+    modal.setAttribute('aria-hidden', 'true');
   }
 
-  const fallback = () => {
-    const tmp = document.createElement('textarea');
-    tmp.value = ta.value || '';
-    document.body.appendChild(tmp);
-    tmp.select();
-    document.execCommand('copy');
-    document.body.removeChild(tmp);
-  };
+  copyPromptToClipboard() {
+    const ta = document.getElementById('prompt-text');
+    if (!ta) {
+      this.showToast('Prompt area not found', 'error');
+      return;
+    }
 
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(ta.value || '').then(() => {
-      this.showToast('Prompt copied to clipboard!', 'success');
-      this.hidePromptModal();
-    }).catch(() => {
+    const fallback = () => {
+      const tmp = document.createElement('textarea');
+      tmp.value = ta.value || '';
+      document.body.appendChild(tmp);
+      tmp.select();
+      document.execCommand('copy');
+      document.body.removeChild(tmp);
+    };
+
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(ta.value || '').then(() => {
+        this.showToast('Prompt copied to clipboard!', 'success');
+        this.hidePromptModal();
+      }).catch(() => {
+        fallback();
+        this.showToast('Prompt copied to clipboard!', 'success');
+        this.hidePromptModal();
+      });
+    } else {
       fallback();
       this.showToast('Prompt copied to clipboard!', 'success');
       this.hidePromptModal();
-    });
-  } else {
-    fallback();
-    this.showToast('Prompt copied to clipboard!', 'success');
-    this.hidePromptModal();
+    }
   }
-}
-// --- end modal helpers ---
+  // --- end modal helpers ---
 
 
- // Study view
-    loadStudyView() {
+  // Study view
+  loadStudyView() {
     const queueEl = document.getElementById('study-queue');
     if (!queueEl) return;
 
@@ -1943,7 +2195,7 @@ copyPromptToClipboard() {
             });
           }
         }
-        if (topic.contentSlots?.flashcards?.status === 'filled') {
+        if (topic.contentSlots?.flashcards?.status === 'filled' && !topic.contentSlots.flashcards.completed) {
           items.push({
             kind: 'review',
             priority: 1,
@@ -1983,23 +2235,22 @@ copyPromptToClipboard() {
 
   // Utilities
   renderMarkdown(md) {
-  if (window.marked) {
-    const html = window.marked.parse(md);
-    return window.DOMPurify ? window.DOMPurify.sanitize(html) : html;
+    if (window.marked) {
+      const html = window.marked.parse(md);
+      return window.DOMPurify ? window.DOMPurify.sanitize(html) : html;
+    }
+    // Fallback: minimal safe rendering
+    const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return escape(md).replace(/\n/g, '<br>');
   }
-  // Fallback: minimal safe rendering
-  const escape = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  return escape(md).replace(/\n/g, '<br>');
-}
 
 
   showToast(message, type = 'info') {
     const toast = document.createElement('div');
-    toast.className = `p-4 rounded-lg shadow-lg text-white max-w-sm transform translate-x-0 opacity-100 transition-all duration-300 ${
-      type === 'success' ? 'bg-green-500' :
+    toast.className = `p-4 rounded-lg shadow-lg text-white max-w-sm transform translate-x-0 opacity-100 transition-all duration-300 ${type === 'success' ? 'bg-green-500' :
       type === 'error' ? 'bg-red-500' :
-      type === 'warning' ? 'bg-yellow-500' : 'bg-blue-500'
-    }`;
+        type === 'warning' ? 'bg-yellow-500' : 'bg-blue-500'
+      }`;
     toast.innerHTML = `
       <div class="flex items-center space-x-2">
         <span class="text-lg">${type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : 'ℹ️'}</span>
@@ -2017,6 +2268,78 @@ copyPromptToClipboard() {
 
   capitalize(str) {
     return (str || '').charAt(0).toUpperCase() + (str || '').slice(1);
+  }
+
+  // Soft validators for reading content (warn-only)
+  validateReadingMarkdown(md, type) {
+    const warnings = [];
+    const h3Count = (md.match(/(^|\n)###\s+/g) || []).length;
+
+    const hasHeading = (variants) => {
+      const escaped = variants.map(this._escRe).join('|');
+      const re = new RegExp(`(^|\\n)\\s*#{2,4}\\s*(${escaped})\\b`, 'mi');
+      return re.test(md);
+    };
+
+    if (type === 'summary') {
+      const hasScope = hasHeading(['Scope Map', 'What you will learn', 'Scope']);
+      const hasQuickRef = hasHeading(['Quick Reference', 'Quick Reference Sheet']);
+      const hasTLDR = /(^|\n)\s*#{2,4}\s*(TL;?DR)\b/mi.test(md);
+      const hasSelfCheck = hasHeading(['Self-Check', 'Self Check', 'Self-Assessment Questions', 'Self Assessment Questions']);
+      const hasCore = h3Count >= 2; // at least some core sections exist
+
+      if (!hasScope) warnings.push('Scope Map');
+      if (!hasCore) warnings.push('Core sections');
+      if (!hasQuickRef) warnings.push('Quick Reference');
+      if (!hasTLDR) warnings.push('TL;DR');
+      if (!hasSelfCheck) warnings.push('Self-Check');
+    }
+
+    if (type === 'explainer') {
+      const hasDef = hasHeading(['Simple Definition', 'Definition']);
+      const hasBreakdown = hasHeading(['Step-by-Step Breakdown', 'Step by Step Breakdown', 'Breakdown']);
+      const hasExample = hasHeading(['Worked Example', 'Example']);
+      const hasWhy = hasHeading(['Why It Matters']);
+
+      if (!hasDef) warnings.push('Simple Definition');
+      if (!hasBreakdown) warnings.push('Step-by-Step Breakdown');
+      if (!hasExample) warnings.push('Worked Example');
+      if (!hasWhy) warnings.push('Why It Matters');
+      // Analogies/Visual Description are optional; no warnings
+    }
+
+    if (type === 'practice') {
+      const hasWarm = hasHeading(['Warm-Up Problems', 'Warm Up Problems', 'Warm-Ups']);
+      const hasStd = hasHeading(['Standard Problems']);
+      const hasChal = hasHeading(['Challenge Problems']);
+      const hasApp = hasHeading(['Application Problems']);
+      const solutions = (md.match(/(^|\n)\s*\*?\s*Solution\s*:/gmi) || []).length;
+
+      if (!hasWarm) warnings.push('Warm-Up Problems');
+      if (!hasStd) warnings.push('Standard Problems');
+      if (!hasChal) warnings.push('Challenge Problems');
+      if (!hasApp) warnings.push('Application Problems');
+      if (solutions === 0) warnings.push('Solutions for problems');
+    }
+
+    if (type === 'review') {
+      const hasChecklist = hasHeading(['Topic Mastery Checklist', 'Mastery Checklist']);
+      const hasQuickRef = hasHeading(['Quick Reference', 'Quick Reference Sheet']);
+      const hasSelfQ = hasHeading(['Self-Assessment Questions', 'Self Assessment Questions']);
+      const hasTips = hasHeading(['Final Review Tips', 'Review Tips']);
+
+      if (!hasChecklist) warnings.push('Topic Mastery Checklist');
+      if (!hasQuickRef) warnings.push('Quick Reference');
+      if (!hasSelfQ) warnings.push('Self-Assessment Questions');
+      if (!hasTips) warnings.push('Final Review Tips');
+    }
+
+    return warnings;
+  }
+
+  // Small regex escape helper
+  _escRe(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
   // Data management
@@ -2085,7 +2408,7 @@ copyPromptToClipboard() {
         currentContent: null
       };
       this.applyDarkMode(false);
-      try { localStorage.setItem('theme', 'light'); } catch {}
+      try { localStorage.setItem('theme', 'light'); } catch { }
       this.showToast('All data cleared', 'success');
       this.showView('dashboard');
       this.updateDashboard();
@@ -2136,7 +2459,8 @@ OUTPUT JSON ONLY (quiz_mcq_v1):
 \`\`\`
 NO TEXT OUTSIDE THE JSON BLOCK.`;
   } else if (type === 'flashcards') {
-    prompt = `ROLE: Flashcard expert. Produce 18 cards.
+    const n = (app.data?.settings?.personalization?.flashcardsCount) ?? 15;
+    prompt = `ROLE: Flashcard expert. Create exactly ${n} high-quality flashcards.
 
 OUTPUT JSON ONLY (flashcards_v1):
 \`\`\`json
@@ -2144,27 +2468,28 @@ OUTPUT JSON ONLY (flashcards_v1):
   "schema_version":"flashcards_v1",
   "topic_id":"topic_id_here",
   "cards":[{"id":"c1","front":"Front text","back":"Back text","tags":["definition"],"citation_ids":[]}],
-  "total":18
+  "total": ${n}
 }
 \`\`\`
 NO TEXT OUTSIDE THE JSON BLOCK.`;
-  } else {
-    // summary / explainer / practice / review → Markdown only
-    prompt = app.getContentPrompt(type, app.data.currentTopic || { name: 'Selected Topic', difficulty: 'Medium' });
   }
+} else {
+  // summary / explainer / practice / review → Markdown only
+  prompt = app.getContentPrompt(type, app.data.currentTopic || { name: 'Selected Topic', difficulty: 'Medium' });
+}
 
-  const fallbackCopy = () => {
-    const ta = document.createElement('textarea');
-    ta.value = prompt;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    app.showToast('Prompt copied to clipboard!', 'success');
-  };
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(prompt).then(() => app.showToast('Prompt copied to clipboard!', 'success')).catch(fallbackCopy);
-  } else {
-    fallbackCopy();
-  }
+const fallbackCopy = () => {
+  const ta = document.createElement('textarea');
+  ta.value = prompt;
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  document.body.removeChild(ta);
+  app.showToast('Prompt copied to clipboard!', 'success');
+};
+if (navigator.clipboard?.writeText) {
+  navigator.clipboard.writeText(prompt).then(() => app.showToast('Prompt copied to clipboard!', 'success')).catch(fallbackCopy);
+} else {
+  fallbackCopy();
+}
 }
