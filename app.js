@@ -1927,7 +1927,9 @@ CITATION STYLE (plain text only):
 ${mustCoverBlock}${personalize}
 
 CONSTRAINTS AND FLEXIBILITY:
-- Output Markdown only. No JSON. No code fences.
+- Output must be wrapped entirely in a single fenced Markdown code block (\`\`\`).
+- No syntax highlighting language (use plain triple backticks, not \`\`\`json).
+- No extra text outside the code block.
 - Cover all MUST COVER items (if given), but be flexible:
   • Omit sections that add no value for this topic.
   • Merge trivial subtopics into larger sections when appropriate.
@@ -1992,7 +1994,9 @@ CITATION STYLE (plain text only; sparingly):
 ${personalize}
 
 CONSTRAINTS AND FLEXIBILITY:
-- Markdown only. No JSON. No code fences.
+- Output must be wrapped entirely in a single fenced Markdown code block (\`\`\`).
+- No syntax highlighting language (use plain triple backticks, not \`\`\`json).
+- No extra text outside the code block.
 - Include only sections that add value; merge or omit trivial parts.
 - Use simple language first, then formal terms.
 
@@ -2028,7 +2032,9 @@ CITATION STYLE (optional, plain text): (p. 199), (pp. 199–201), (Sec. 3.2)
 ${personalize}
 
 CONSTRAINTS AND FLEXIBILITY:
-- Markdown only. No JSON. No code fences.
+- Output must be wrapped entirely in a single fenced Markdown code block (\`\`\`).
+- No syntax highlighting language (use plain triple backticks, not \`\`\`json).
+- No extra text outside the code block.
 - Include only sections that add value. Merge/omit as appropriate.
 - Every problem must include a step-by-step solution and the concept it reinforces.
 
@@ -2065,7 +2071,9 @@ CITATION STYLE (optional, plain text): (p. 199), (pp. 199–201), (Sec. 3.2)
 ${personalize}
 
 CONSTRAINTS AND FLEXIBILITY:
-- Markdown only. No JSON. No code fences.
+- Output must be wrapped entirely in a single fenced Markdown code block (\`\`\`).
+- No syntax highlighting language (use plain triple backticks, not \`\`\`json).
+- No extra text outside the code block.
 - Include only sections that add value; adapt headings as needed.
 - Answers inline (no <details> blocks).
 
