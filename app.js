@@ -2472,24 +2472,24 @@ OUTPUT JSON ONLY (flashcards_v1):
 }
 \`\`\`
 NO TEXT OUTSIDE THE JSON BLOCK.`;
-  }
-} else {
-  // summary / explainer / practice / review → Markdown only
-  prompt = app.getContentPrompt(type, app.data.currentTopic || { name: 'Selected Topic', difficulty: 'Medium' });
-}
 
-const fallbackCopy = () => {
-  const ta = document.createElement('textarea');
-  ta.value = prompt;
-  document.body.appendChild(ta);
-  ta.select();
-  document.execCommand('copy');
-  document.body.removeChild(ta);
-  app.showToast('Prompt copied to clipboard!', 'success');
-};
-if (navigator.clipboard?.writeText) {
-  navigator.clipboard.writeText(prompt).then(() => app.showToast('Prompt copied to clipboard!', 'success')).catch(fallbackCopy);
-} else {
-  fallbackCopy();
-}
+  } else {
+    // summary / explainer / practice / review → Markdown only
+    prompt = app.getContentPrompt(type, app.data.currentTopic || { name: 'Selected Topic', difficulty: 'Medium' });
+  }
+
+  const fallbackCopy = () => {
+    const ta = document.createElement('textarea');
+    ta.value = prompt;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    app.showToast('Prompt copied to clipboard!', 'success');
+  };
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(prompt).then(() => app.showToast('Prompt copied to clipboard!', 'success')).catch(fallbackCopy);
+  } else {
+    fallbackCopy();
+  }
 }
