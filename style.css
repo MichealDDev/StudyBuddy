@@ -1,38 +1,48 @@
-/* style.css - Complete & Refined */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+/* style.css - Study Buddy Modern Redesign */
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
   --primary-50: #EEF2FF;
+  --primary-100: #E0E7FF;
   --primary-500: #4F46E5;
   --primary-600: #4338CA;
   --primary-700: #3730A3;
 }
 
 * {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   -webkit-tap-highlight-color: transparent;
+}
+
+code, kbd, samp, pre {
+  font-family: 'JetBrains Mono', monospace;
 }
 
 /* Mobile Safe Area Padding */
 .safe-bottom {
-  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.5rem);
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.75rem);
 }
 
-/* Animations */
-.popover-enter {
-  opacity: 0;
-  transform: translateY(-6px) scale(0.98);
+/* 3D Flashcard Flip */
+.perspective-1000 {
+  perspective: 1000px;
 }
-.popover-enter-active {
-  opacity: 1;
-  transform: translateY(0) scale(1);
-  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+.transform-style-3d {
+  transform-style: preserve-3d;
+  transition: transform 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.backface-hidden {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+.rotate-y-180 {
+  transform: rotateY(180deg);
 }
 
 /* Custom Scrollbars */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -45,7 +55,7 @@ html.dark ::-webkit-scrollbar-thumb {
   background: #334155;
 }
 
-/* Inputs & Form Elements (Dark mode fix - preserve radio/checkbox/range styles) */
+/* Form Inputs Scoped for Dark Mode */
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="submit"]):not([type="button"]):not([type="file"]),
 textarea,
 select {
@@ -76,7 +86,7 @@ html.dark textarea::placeholder {
 }
 .prose p {
   margin: 0.6rem 0;
-  line-height: 1.65;
+  line-height: 1.7;
 }
 .prose ul, .prose ol {
   padding-left: 1.25rem;
@@ -87,18 +97,20 @@ html.dark textarea::placeholder {
 }
 .prose code {
   font-size: 0.85em;
-  background-color: rgba(0, 0, 0, 0.05);
+  background-color: rgba(79, 70, 229, 0.08);
+  color: #4338ca;
   padding: 0.15rem 0.35rem;
   border-radius: 0.375rem;
 }
 html.dark .prose code {
-  background-color: rgba(255, 255, 255, 0.1);
+  background-color: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
 }
 .prose pre {
   background-color: #0f172a;
   color: #f8fafc;
-  padding: 0.85rem;
-  border-radius: 0.5rem;
+  padding: 0.9rem;
+  border-radius: 0.75rem;
   overflow-x: auto;
 }
 .prose pre code {
@@ -108,13 +120,13 @@ html.dark .prose code {
   color: inherit;
 }
 .prose blockquote {
-  border-left: 3px solid #cbd5e1;
+  border-left: 3px solid #6366f1;
   padding-left: 1rem;
   font-style: italic;
-  color: #64748b;
+  color: #475569;
 }
 html.dark .prose blockquote {
-  border-left-color: #475569;
+  border-left-color: #818cf8;
   color: #94a3b8;
 }
 .prose table {
@@ -124,11 +136,21 @@ html.dark .prose blockquote {
 }
 .prose th, .prose td {
   border: 1px solid #e2e8f0;
-  padding: 0.5rem;
+  padding: 0.6rem;
 }
 html.dark .prose th, html.dark .prose td {
   border-color: #334155;
 }
 html.dark .prose th {
   background-color: #1e293b;
+}
+
+/* Glassmorphism */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+html.dark .glass-panel {
+  background: rgba(15, 23, 42, 0.85);
 }
