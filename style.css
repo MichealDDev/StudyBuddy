@@ -23,20 +23,32 @@ code, kbd, samp, pre {
   padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.75rem);
 }
 
-/* 3D Flashcard Flip */
+/* 3D Flashcard Flip (Solid Opaque & Anti-Bleed) */
 .perspective-1000 {
   perspective: 1000px;
 }
 .transform-style-3d {
-  transform-style: preserve-3d;
+  transform-style: preserve-3d !important;
+  -webkit-transform-style: preserve-3d !important;
   transition: transform 0.45s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .backface-hidden {
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden !important;
+  -webkit-backface-visibility: hidden !important;
 }
 .rotate-y-180 {
-  transform: rotateY(180deg);
+  transform: rotateY(180deg) !important;
+}
+
+/* KaTeX Math Styling */
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.5rem 0;
+  margin: 0.75rem 0 !important;
+}
+.katex {
+  font-size: 1.05em;
 }
 
 /* Custom Scrollbars */
@@ -145,7 +157,7 @@ html.dark .prose th {
   background-color: #1e293b;
 }
 
-/* Glassmorphism */
+/* Glassmorphism utility */
 .glass-panel {
   background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(12px);
@@ -153,4 +165,27 @@ html.dark .prose th {
 }
 html.dark .glass-panel {
   background: rgba(15, 23, 42, 0.85);
+}
+
+/* Floating Navigation Active Pill */
+.nav-active-pill {
+  position: relative;
+  color: #4F46E5 !important;
+}
+html.dark .nav-active-pill {
+  color: #818CF8 !important;
+}
+.nav-active-pill::after {
+  content: '';
+  position: absolute;
+  bottom: 0px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 3px;
+  background-color: #4F46E5;
+  border-radius: 9999px;
+}
+html.dark .nav-active-pill::after {
+  background-color: #818CF8;
 }
