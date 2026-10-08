@@ -1,777 +1,4 @@
-// app.js - Production Ready & Refined
-
-// Utility: HTML Escaper
-function escapeHtml(str) {
-  if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
-// Utility: Clean placeholder brackets e.g. "[Cell Biology]" -> "Cell Biology"
-function cleanBrackets(str) {
-  if (!str) return '';
-  return String(str).replace(/^\[(.*)\]$/, '$1').trim();
-}
-
-// Utility: Extract the first fenced JSON code block or parse direct JSON
-function extractJsonFromText(text) {
-  if (!text) return null;
-  try {
-    const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    const jsonString = codeBlockMatch ? codeBlockMatch[1] : text.trim();
-    return JSON.parse(jsonString);
-  } catch {
-    return null;
-  }
-}
-
-class StudyBuddyApp {
-  constructor() {
-    this.data = {
-      courses: [],
-      settings: {
-        darkMode: false,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        personalization: {
-          depth: 'standard',
-          examples: 'medium',
-          rigor: 'light',
-          readTime: 10,
-          difficulty: 'Intermediate',
-          citation: 'minimal',
-          flashcardsCount: 15
-        }
-      },
-      stats: {
-        streak: 0,
-        lastActiveDate: null
-      },
-      currentView: 'dashboard',
-      currentCourse: null,
-      currentTopic: null,
-      currentContent: null
-    };
-    this.currentQuiz = null;
-    this.menuOpen = false;
-    this.quizMasteryThreshold = 70; // auto-complete quiz at or above this %
-    this._flash = null;
-    this._flashWired = false;
-
-    this.init();
-  }
-
-  init() {
-    this.loadData();
-    this.migrateDataSchema();
-    this.initDarkModeState();
-    this.checkAndUpdateStreak();
-    this.setupEventListeners();
-    this.updateDashboard();
-    this.showView('dashboard');
-  }
-
-  // Dark Mode Initialization & Sync
-  initDarkModeState() {
-    const storedTheme = localStorage.getItem('theme');
-    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-    
-    // If settings has darkMode explicitly saved as boolean, honor it; otherwise detect
-    if (typeof this.data.settings?.darkMode === 'boolean') {
-      this.applyDarkMode(this.data.settings.darkMode);
-    } else {
-      const isDark = storedTheme === 'dark' || (!storedTheme && prefersDark);
-      this.data.settings.darkMode = isDark;
-      this.applyDarkMode(isDark);
-    }
-  }
-
-  applyDarkMode(enabled) {
-    document.documentElement.classList.toggle('dark', enabled);
-    try {
-      localStorage.setItem('theme', enabled ? 'dark' : 'light');
-    } catch { }
-    const darkToggle = document.getElementById('dark-mode-toggle');
-    if (darkToggle && darkToggle.checked !== enabled) {
-      darkToggle.checked = enabled;
-    }
-  }
-
-  // Persistence
-  saveData(showToast = true) {
-    try {
-      localStorage.setItem('studyBuddyData', JSON.stringify(this.data));
-      if (showToast) this.showToast('Data saved successfully', 'success');
-    } catch (error) {
-      this.showToast('Failed to save data', 'error');
-    }
-  }
-
-  migrateDataSchema() {
-    try {
-      for (const course of this.data.courses || []) {
-        for (const topic of course.topics || []) {
-          const slots = topic.contentSlots || {};
-          for (const key of Object.keys(slots)) {
-            const slot = slots[key] || {};
-            if (typeof slot.completed !== 'boolean') slot.completed = false;
-            if (key === 'quiz') {
-              if (!Array.isArray(slot.attempts)) slot.attempts = [];
-              if (typeof slot.bestScore !== 'number') slot.bestScore = 0;
-            }
-            if (key === 'flashcards') {
-              if (!slot.srs) slot.srs = { cards: {} };
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('Schema migration skipped:', e);
-    }
-
-    // Backfill personalization defaults
-    this.data.settings = this.data.settings || {};
-    this.data.settings.personalization = this.data.settings.personalization || {};
-    const pp = this.data.settings.personalization;
-    if (!pp.depth) pp.depth = 'standard';
-    if (!pp.examples) pp.examples = 'medium';
-    if (!pp.rigor) pp.rigor = 'light';
-    if (typeof pp.readTime !== 'number') pp.readTime = 10;
-    if (!pp.difficulty) pp.difficulty = 'Intermediate';
-    if (!pp.citation) pp.citation = 'minimal';
-    if (typeof pp.flashcardsCount !== 'number') pp.flashcardsCount = 15;
-
-    // Backfill stats
-    this.data.stats = this.data.stats || { streak: 0, lastActiveDate: null };
-  }
-
-  loadData() {
-    try {
-      const saved = localStorage.getItem('studyBuddyData');
-      if (saved) {
-        const loadedData = JSON.parse(saved);
-        this.data = { ...this.data, ...loadedData };
-      }
-    } catch (error) {
-      console.error('Failed to load data:', error);
-    }
-  }
-
-  // Streak tracking (using local calendar day)
-  _today() {
-    const d = new Date();
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  }
-
-  _addDays(n) {
-    const d = new Date();
-    d.setDate(d.getDate() + n);
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  }
-
-  checkAndUpdateStreak() {
-    const today = this._today();
-    const last = this.data.stats.lastActiveDate;
-
-    if (!last) {
-      this.data.stats.streak = 1;
-      this.data.stats.lastActiveDate = today;
-      this.saveData(false);
-      return;
-    }
-
-    if (last === today) return; // Already recorded today
-
-    const yesterday = this._addDays(-1);
-    if (last === yesterday) {
-      this.data.stats.streak += 1;
-    } else {
-      this.data.stats.streak = 1; // Streak reset
-    }
-    this.data.stats.lastActiveDate = today;
-    this.saveData(false);
-  }
-
-  recordActivity() {
-    this.checkAndUpdateStreak();
-    this.updateDashboard();
-  }
-
-  _getDefaultPrefs() {
-    return {
-      depth: 'standard',
-      examples: 'medium',
-      rigor: 'light',
-      readTime: 10,
-      difficulty: 'Intermediate',
-      citation: 'minimal',
-      flashcardsCount: 15
-    };
-  }
-
-  syncPreferencesUI() {
-    const pp = this.data.settings.personalization || this._getDefaultPrefs();
-    const el = (id) => document.getElementById(id);
-
-    const darkToggle = el('dark-mode-toggle');
-    if (darkToggle) darkToggle.checked = !!this.data.settings.darkMode;
-
-    const depthEl = el('pref-depth');
-    const exEl = el('pref-examples');
-    const rigEl = el('pref-rigor');
-    const diffEl = el('pref-difficulty');
-    const citEl = el('pref-citation');
-    const rtEl = el('pref-readtime');
-    const rtVal = el('pref-readtime-value');
-    const fcEl = el('pref-fc-count');
-
-    if (!depthEl) return;
-
-    depthEl.value = pp.depth;
-    exEl.value = pp.examples;
-    rigEl.value = pp.rigor;
-    diffEl.value = pp.difficulty;
-    citEl.value = pp.citation;
-    rtEl.value = pp.readTime;
-    if (rtVal) rtVal.textContent = String(pp.readTime);
-    fcEl.value = pp.flashcardsCount;
-  }
-
-  _initPreferenceControls() {
-    this.syncPreferencesUI();
-
-    const el = (id) => document.getElementById(id);
-    const depthEl = el('pref-depth');
-    const exEl = el('pref-examples');
-    const rigEl = el('pref-rigor');
-    const diffEl = el('pref-difficulty');
-    const citEl = el('pref-citation');
-    const rtEl = el('pref-readtime');
-    const rtVal = el('pref-readtime-value');
-    const fcEl = el('pref-fc-count');
-    const resetEl = el('prefs-reset-btn');
-
-    if (!depthEl) return;
-
-    const pp = this.data.settings.personalization;
-    const save = () => {
-      this.saveData(false);
-      this.showToast('Preferences saved', 'success');
-    };
-
-    depthEl.addEventListener('change', e => { pp.depth = e.target.value; save(); });
-    exEl.addEventListener('change', e => { pp.examples = e.target.value; save(); });
-    rigEl.addEventListener('change', e => { pp.rigor = e.target.value; save(); });
-    diffEl.addEventListener('change', e => { pp.difficulty = e.target.value; save(); });
-    citEl.addEventListener('change', e => { pp.citation = e.target.value; save(); });
-    rtEl.addEventListener('input', e => { if (rtVal) rtVal.textContent = e.target.value; });
-    rtEl.addEventListener('change', e => { pp.readTime = Number(e.target.value); save(); });
-    fcEl.addEventListener('change', e => {
-      let n = Number(e.target.value);
-      if (!Number.isFinite(n)) n = 15;
-      n = Math.max(5, Math.min(50, n));
-      pp.flashcardsCount = n;
-      e.target.value = String(n);
-      save();
-    });
-
-    resetEl?.addEventListener('click', () => {
-      this.data.settings.personalization = this._getDefaultPrefs();
-      this.syncPreferencesUI();
-      this.saveData(false);
-      this.showToast('Preferences reset to defaults', 'info');
-    });
-  }
-
-  // Event Listeners
-  setupEventListeners() {
-    // Navigation
-    document.getElementById('back-btn')?.addEventListener('click', () => this.goBack());
-
-    // Menu button & popover
-    document.getElementById('menu-btn')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.toggleHeaderMenu();
-    });
-
-    document.addEventListener('click', (e) => {
-      if (this.menuOpen) {
-        const menu = document.getElementById('header-menu');
-        const btn = document.getElementById('menu-btn');
-        if (menu && btn && !menu.contains(e.target) && !btn.contains(e.target)) {
-          this.closeHeaderMenu();
-        }
-      }
-    });
-
-    document.getElementById('header-menu')?.addEventListener('click', (e) => {
-      const action = e.target.closest('button')?.dataset?.menuAction;
-      if (!action) return;
-      if (action === 'settings') this.showView('settings');
-      if (action === 'prompts') this.showView('prompts');
-      if (action === 'export') this.exportData();
-      this.closeHeaderMenu();
-    });
-
-    // Course management
-    document.getElementById('add-course-btn')?.addEventListener('click', () => this.showAddCourseModal());
-    document.getElementById('add-course-form')?.addEventListener('submit', (e) => this.addCourse(e));
-    document.getElementById('cancel-course-btn')?.addEventListener('click', () => this.hideAddCourseModal());
-
-    // Modals backdrop clicks & ESC key
-    document.getElementById('add-course-modal')?.addEventListener('click', (e) => {
-      if (e.target.id === 'add-course-modal') this.hideAddCourseModal();
-    });
-    document.getElementById('prompt-modal')?.addEventListener('click', (e) => {
-      if (e.target.id === 'prompt-modal') this.hidePromptModal();
-    });
-
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        this.hideAddCourseModal();
-        this.hidePromptModal();
-        this.closeFlashcardsStudy();
-      }
-    });
-
-    // Structure handling
-    document.getElementById('get-structure-prompt-btn')?.addEventListener('click', () => this.showStructurePrompt());
-    document.getElementById('parse-structure-btn')?.addEventListener('click', () => this.parseStructureResponse());
-
-    // Content management
-    document.getElementById('get-content-prompt-btn')?.addEventListener('click', () => this.showContentPrompt());
-    document.getElementById('save-content-btn')?.addEventListener('click', () => this.saveContent());
-    document.getElementById('cancel-content-btn')?.addEventListener('click', () => this.cancelContentEdit());
-    document.getElementById('edit-content-btn')?.addEventListener('click', () => this.editContent());
-    document.getElementById('delete-content-btn')?.addEventListener('click', () => this.deleteContent());
-
-    // Prompt modal
-    document.getElementById('close-prompt-modal')?.addEventListener('click', () => this.hidePromptModal());
-    document.getElementById('copy-prompt-btn')?.addEventListener('click', () => this.copyPromptToClipboard());
-
-    // Settings
-    document.getElementById('export-data-btn')?.addEventListener('click', () => this.exportData());
-    document.getElementById('import-data-btn')?.addEventListener('click', () => this.importData());
-    document.getElementById('import-file-input')?.addEventListener('change', (e) => this.handleImportFile(e));
-    document.getElementById('clear-all-data-btn')?.addEventListener('click', () => this.clearAllData());
-
-    // Dark mode toggle
-    const darkToggle = document.getElementById('dark-mode-toggle');
-    if (darkToggle) {
-      darkToggle.checked = !!this.data.settings.darkMode;
-      darkToggle.addEventListener('change', (e) => {
-        const enabled = e.target.checked;
-        this.data.settings.darkMode = enabled;
-        this.applyDarkMode(enabled);
-        this.saveData(false);
-        this.showToast(`Dark mode ${enabled ? 'enabled' : 'disabled'}`, 'info');
-      });
-    }
-
-    // Flashcards delegation
-    document.addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-start-flashcards]');
-      if (!btn) return;
-      const topicId = btn.getAttribute('data-topic-id') || this.data.currentTopic?.id;
-      this.openFlashcardsStudy(topicId);
-    });
-
-    // Quiz
-    this.setupQuizEventListeners();
-    this._initPreferenceControls();
-  }
-
-  toggleHeaderMenu() {
-    const menu = document.getElementById('header-menu');
-    const btn = document.getElementById('menu-btn');
-    this.menuOpen = !this.menuOpen;
-    if (btn) btn.setAttribute('aria-expanded', this.menuOpen ? 'true' : 'false');
-    if (this.menuOpen && menu) {
-      menu.classList.remove('hidden');
-      menu.classList.add('popover-enter');
-      requestAnimationFrame(() => menu.classList.add('popover-enter-active'));
-      setTimeout(() => menu.classList.remove('popover-enter', 'popover-enter-active'), 150);
-    } else {
-      this.closeHeaderMenu();
-    }
-  }
-
-  closeHeaderMenu() {
-    const menu = document.getElementById('header-menu');
-    if (menu) menu.classList.add('hidden');
-    this.menuOpen = false;
-    const btn = document.getElementById('menu-btn');
-    if (btn) btn.setAttribute('aria-expanded', 'false');
-  }
-
-  setupQuizEventListeners() {
-    document.getElementById('quiz-submit-btn')?.addEventListener('click', () => this.submitQuizAnswer());
-    document.getElementById('quiz-next-btn')?.addEventListener('click', () => this.handleQuizNextOrFinish());
-    document.getElementById('quiz-prev-btn')?.addEventListener('click', () => this.prevQuizQuestion());
-    document.getElementById('retake-quiz-btn')?.addEventListener('click', () => this.retakeQuiz());
-    document.getElementById('quiz-review-btn')?.addEventListener('click', () => this.reviewQuizAnswers());
-    document.getElementById('review-back-to-results-btn')?.addEventListener('click', () => this.backToQuizResults());
-  }
-
-  markContentCompleted(type, topicId) {
-    const cIdx = this.data.courses.findIndex(c => c.id === this.data.currentCourse?.id);
-    if (cIdx < 0) return;
-    const tIdx = this.data.courses[cIdx].topics.findIndex(t => t.id === topicId);
-    if (tIdx < 0) return;
-    const slot = this.data.courses[cIdx].topics[tIdx].contentSlots[type];
-    if (!slot || slot.status === 'empty') {
-      this.showToast('Generate content before marking completed', 'warning');
-      return;
-    }
-    slot.completed = true;
-    slot.lastUpdated = new Date().toISOString();
-    this.recordActivity();
-    this.saveData(false);
-    this.showToast('Marked as completed ✅', 'success');
-    this.loadContentSlots(this.data.courses[cIdx].topics[tIdx]);
-    this.loadTopicDetail({ topicId });
-  }
-
-  unmarkContentCompleted(type, topicId) {
-    const cIdx = this.data.courses.findIndex(c => c.id === this.data.currentCourse?.id);
-    if (cIdx < 0) return;
-    const tIdx = this.data.courses[cIdx].topics.findIndex(t => t.id === topicId);
-    if (tIdx < 0) return;
-    const slot = this.data.courses[cIdx].topics[tIdx].contentSlots[type];
-    if (!slot) return;
-    slot.completed = false;
-    slot.lastUpdated = new Date().toISOString();
-    this.saveData(false);
-    this.showToast('Completion undone', 'info');
-    this.loadContentSlots(this.data.courses[cIdx].topics[tIdx]);
-    this.loadTopicDetail({ topicId });
-  }
-
-  // Navigation
-  showView(viewName, data = null) {
-    if (this.data.currentView === 'quiz' && viewName !== 'quiz') {
-      this.stopQuizTimer();
-    }
-
-    document.querySelectorAll('.view-content').forEach(v => v.classList.add('hidden'));
-    const view = document.getElementById(`${viewName}-view`);
-    if (view) {
-      view.classList.remove('hidden');
-      this.data.currentView = viewName;
-      this.updateHeader(viewName);
-      this.updateNavigation(viewName);
-
-      switch (viewName) {
-        case 'dashboard':
-          this.updateDashboard();
-          break;
-        case 'courses':
-          this.loadCourses();
-          break;
-        case 'course-detail':
-          this.loadCourseDetail(data);
-          break;
-        case 'topic-detail':
-          this.loadTopicDetail(data);
-          break;
-        case 'content':
-          this.loadContentView(data);
-          break;
-        case 'quiz':
-          this.loadQuizView(data);
-          break;
-        case 'study':
-          this.loadStudyView();
-          break;
-        case 'settings':
-          this.syncPreferencesUI();
-          break;
-        default:
-          break;
-      }
-    }
-  }
-
-  goBack() {
-    switch (this.data.currentView) {
-      case 'course-detail':
-        this.showView('courses');
-        break;
-      case 'topic-detail':
-        this.showView('course-detail', { courseId: this.data.currentCourse?.id });
-        break;
-      case 'content':
-      case 'quiz':
-        this.showView('topic-detail', { topicId: this.data.currentTopic?.id });
-        break;
-      default:
-        this.showView('dashboard');
-    }
-  }
-
-  updateHeader(viewName) {
-    const backBtn = document.getElementById('back-btn');
-    const headerTitle = document.getElementById('header-title');
-    const headerSubtitle = document.getElementById('header-subtitle');
-
-    if (['dashboard', 'courses', 'prompts', 'settings', 'study'].includes(viewName)) {
-      backBtn?.classList.add('hidden');
-    } else {
-      backBtn?.classList.remove('hidden');
-    }
-
-    switch (viewName) {
-      case 'dashboard':
-        headerTitle.textContent = 'Study Buddy';
-        headerSubtitle.textContent = '';
-        break;
-      case 'courses':
-        headerTitle.textContent = 'My Courses';
-        headerSubtitle.textContent = '';
-        break;
-      case 'course-detail':
-        headerTitle.textContent = this.data.currentCourse?.name || 'Course';
-        headerSubtitle.textContent = 'Course Structure';
-        break;
-      case 'topic-detail':
-        headerTitle.textContent = this.data.currentTopic?.name || 'Topic';
-        headerSubtitle.textContent = this.data.currentCourse?.name || '';
-        break;
-      case 'content':
-        headerTitle.textContent = this.data.currentContent?.type ? this.capitalize(this.data.currentContent.type) : 'Content';
-        headerSubtitle.textContent = this.data.currentTopic?.name || '';
-        break;
-      case 'quiz':
-        headerTitle.textContent = 'Quiz';
-        headerSubtitle.textContent = this.data.currentTopic?.name || '';
-        break;
-      case 'prompts':
-        headerTitle.textContent = 'Prompts Library';
-        headerSubtitle.textContent = '';
-        break;
-      case 'settings':
-        headerTitle.textContent = 'Settings';
-        headerSubtitle.textContent = '';
-        break;
-      case 'study':
-        headerTitle.textContent = 'Study';
-        headerSubtitle.textContent = 'Smart Queue';
-        break;
-      default:
-        break;
-    }
-  }
-
-  updateNavigation(viewName) {
-    document.querySelectorAll('.nav-btn').forEach(btn => {
-      btn.classList.remove('text-primary-500');
-      btn.classList.add('text-gray-400');
-    });
-
-    let navTarget = viewName;
-    if (['course-detail', 'topic-detail', 'content', 'quiz'].includes(viewName)) {
-      navTarget = 'courses';
-    }
-
-    const activeBtn = document.querySelector(`[onclick="showView('${navTarget}')"]`);
-    if (activeBtn) {
-      activeBtn.classList.remove('text-gray-400');
-      activeBtn.classList.add('text-primary-500');
-    }
-  }
-
-  // Dashboard
-  updateDashboard() {
-    const totalCoursesEl = document.getElementById('total-courses');
-    if (totalCoursesEl) totalCoursesEl.textContent = this.data.courses.length;
-
-    const streakEl = document.getElementById('study-streak');
-    if (streakEl) streakEl.textContent = this.data.stats?.streak || 0;
-
-    this.loadRecentActivity();
-  }
-
-  loadRecentActivity() {
-    const container = document.getElementById('recent-activity');
-    if (!container) return;
-
-    if (this.data.courses.length === 0) {
-      container.innerHTML = `
-        <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded-lg text-center text-gray-500 dark:text-gray-400">
-          <p class="text-sm">No recent activity</p>
-          <p class="text-xs mt-1">Start by creating a course!</p>
-        </div>
-      `;
-    } else {
-      const recentItems = this.data.courses.slice(-3).reverse();
-      container.innerHTML = recentItems.map(course => `
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-4 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors"
-             onclick="app.openCourse('${course.id}')">
-          <h4 class="font-medium text-gray-800 dark:text-gray-200">${escapeHtml(course.name)}</h4>
-          <p class="text-sm text-gray-600 dark:text-gray-400">${course.topics?.length || 0} topics</p>
-        </div>
-      `).join('');
-    }
-  }
-
-  // Helpers
-  findCourseById(courseId) {
-    return this.data.courses.find(c => c.id === courseId) || null;
-  }
-  findTopicById(course, topicId) {
-    return (course?.topics || []).find(t => t.id === topicId) || null;
-  }
-  openCourse(courseId) {
-    this.showView('course-detail', { courseId });
-  }
-  openTopic(topicId) {
-    this.showView('topic-detail', { topicId });
-  }
-  openContent(type, topicId) {
-    this.showView('content', { type, topicId });
-  }
-  openQuiz(topicId) {
-    this.showView('quiz', { topicId });
-  }
-
-  // Courses
-  showAddCourseModal() {
-    document.getElementById('add-course-modal')?.classList.remove('hidden');
-    document.getElementById('course-name')?.focus();
-  }
-  hideAddCourseModal() {
-    document.getElementById('add-course-modal')?.classList.add('hidden');
-    document.getElementById('add-course-form')?.reset();
-  }
-
-  addCourse(e) {
-    e.preventDefault();
-    const name = document.getElementById('course-name').value.trim();
-    const description = document.getElementById('course-description').value.trim();
-    if (!name) {
-      this.showToast('Please enter a course name', 'error');
-      return;
-    }
-    const newCourse = {
-      id: Date.now().toString(),
-      name,
-      description,
-      created: new Date().toISOString(),
-      topics: [],
-      structureAnalyzed: false
-    };
-    this.data.courses.push(newCourse);
-    this.recordActivity();
-    this.saveData();
-    this.hideAddCourseModal();
-    this.showToast('Course created successfully!', 'success');
-    this.loadCourses();
-  }
-
-  confirmDeleteCourse(courseId, ev) {
-    try { ev && ev.stopPropagation && ev.stopPropagation(); } catch { }
-    const course = this.findCourseById(courseId);
-    if (!course) return;
-
-    if (!confirm(`Delete "${course.name}" and all its topics and content?\nThis cannot be undone.`)) return;
-    this.deleteCourse(courseId);
-  }
-
-  deleteCourse(courseId) {
-    const idx = this.data.courses.findIndex(c => c.id === courseId);
-    if (idx === -1) return;
-
-    const wasCurrent = this.data.currentCourse && this.data.currentCourse.id === courseId;
-    this.data.courses.splice(idx, 1);
-
-    if (wasCurrent) {
-      this.data.currentCourse = null;
-      this.data.currentTopic = null;
-      this.data.currentContent = null;
-    }
-
-    this.saveData(false);
-    this.showToast('Course deleted', 'success');
-
-    const inCourseContext = ['course-detail', 'topic-detail', 'content', 'quiz'].includes(this.data.currentView);
-    if (wasCurrent && inCourseContext) {
-      this.showView('courses');
-    } else {
-      if (this.data.currentView === 'courses') this.loadCourses();
-      if (this.data.currentView === 'dashboard') this.updateDashboard();
-      if (this.data.currentView === 'study') this.loadStudyView();
-    }
-
-    this.updateDashboard();
-  }
-
-  loadCourses() {
-    const container = document.getElementById('courses-list');
-    if (!container) return;
-
-    if (this.data.courses.length === 0) {
-      container.innerHTML = `
-        <div class="bg-gray-100 dark:bg-gray-800 p-8 rounded-lg text-center text-gray-500 dark:text-gray-400">
-          <svg class="w-12 h-12 mx-auto mb-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-          </svg>
-          <p class="text-lg font-medium mb-2">No courses yet</p>
-          <p class="text-sm">Create your first course to get started!</p>
-        </div>
-      `;
-    } else {
-      container.innerHTML = this.data.courses.map(course => `
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-4 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors"
-             onclick="app.openCourse('${course.id}')">
-          <div class="flex items-start justify-between">
-            <div class="flex-1 pr-2">
-              <h3 class="font-semibold text-gray-800 dark:text-gray-100 mb-1">${escapeHtml(course.name)}</h3>
-              ${course.description ? `<p class="text-sm text-gray-600 dark:text-gray-300 mb-2">${escapeHtml(course.description)}</p>` : ''}
-              <div class="flex items-center space-x-4 text-xs text-gray-500 dark:text-gray-400">
-                <span>${course.topics?.length || 0} topics</span>
-                <span>Created ${new Date(course.created).toLocaleDateString()}</span>
-              </div>
-            </div>
-            <div class="flex flex-col items-end space-y-2">
-              ${course.structureAnalyzed
-                ? '<span class="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300 px-2 py-1 rounded-full text-xs">Structured</span>'
-                : '<span class="bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300 px-2 py-1 rounded-full text-xs">Setup Required</span>'}
-              <button class="text-red-600 dark:text-red-400 text-xs hover:underline"
-                      onclick="app.confirmDeleteCourse('${course.id}', event)">
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      `).join('');
-    }
-  }
-
-  loadCourseDetail(data) {
-    const courseId = data?.courseId || this.data.currentCourse?.id;
-    let course = this.findCourseById(courseId);
-    if (course) {
-      this.data.currentCourse = course;
-    } else {
-      course = this.data.currentCourse;
-    }
-
-    if (!course) {
-      this.showView('courses');
-      return;
-    }
-
-    if (!course.structureAnalyzed) {
+if (!course.structureAnalyzed) {
       document.getElementById('structure-prompt-card').style.display = 'block';
       document.getElementById('paste-structure-card').style.display = 'none';
       document.getElementById('topics-section').classList.add('hidden');
@@ -912,9 +139,8 @@ class StudyBuddyApp {
 
     if (topics.length === 0) {
       container.innerHTML = `
-        <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded-lg text-center text-gray-500 dark:text-gray-400">
-          <p class="text-sm">No topics found</p>
-          <p class="text-xs mt-1">Try re-parsing the structure</p>
+        <div class="bg-slate-50 dark:bg-slate-850 p-6 rounded-2xl text-center text-slate-500 border border-slate-200 dark:border-slate-800">
+          <p class="text-xs">No topics found</p>
         </div>
       `;
       return;
@@ -926,23 +152,23 @@ class StudyBuddyApp {
       const progress = Math.round((completed / Math.max(total, 1)) * 100);
 
       return `
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-4 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors"
+        <div class="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 p-4 rounded-2xl cursor-pointer hover:border-primary-500 hover:shadow-md transition"
              onclick="app.openTopic('${topic.id}')">
           <div class="flex items-start justify-between mb-2">
-            <h4 class="font-semibold text-gray-800 dark:text-gray-100">${escapeHtml(topic.name)}</h4>
-            <span class="bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300 px-2 py-1 rounded-full text-xs">${escapeHtml(topic.difficulty)}</span>
+            <h4 class="font-bold text-slate-900 dark:text-white text-sm">${escapeHtml(topic.name)}</h4>
+            <span class="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 px-2 py-0.5 rounded-full text-[10px] font-bold">${escapeHtml(topic.difficulty)}</span>
           </div>
-          <div class="mb-3">
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-xs text-gray-600 dark:text-gray-400">Progress</span>
-              <span class="text-xs text-gray-600 dark:text-gray-400">${completed}/${total}</span>
+          <div class="mb-2">
+            <div class="flex items-center justify-between text-[11px] text-slate-500 mb-1">
+              <span>Progress</span>
+              <span>${completed}/${total} completed</span>
             </div>
-            <div class="bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-              <div class="bg-primary-500 h-2 rounded-full transition-all duration-300" style="width: ${progress}%"></div>
+            <div class="bg-slate-200 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+              <div class="bg-primary-600 h-1.5 rounded-full transition-all duration-300" style="width: ${progress}%"></div>
             </div>
           </div>
           ${topic.subtopics?.length
-            ? `<div class="text-xs text-gray-500 dark:text-gray-400">Subtopics: ${escapeHtml(topic.subtopics.map(s => s.name).join(', '))}</div>`
+            ? `<div class="text-[11px] text-slate-400 truncate">Subtopics: ${escapeHtml(topic.subtopics.map(s => s.name).join(', '))}</div>`
             : ''
           }
         </div>
@@ -976,62 +202,59 @@ class StudyBuddyApp {
     if (!container) return;
 
     const contentTypes = {
-      summary: { icon: '📝', name: 'Summary', btnClass: 'bg-blue-600 hover:bg-blue-700' },
-      flashcards: { icon: '🃏', name: 'Flashcards', btnClass: 'bg-emerald-600 hover:bg-emerald-700' },
-      quiz: { icon: '📊', name: 'Quiz', btnClass: 'bg-purple-600 hover:bg-purple-700' },
-      explainer: { icon: '💡', name: 'Concept Explainer', btnClass: 'bg-amber-600 hover:bg-amber-700' },
-      practice: { icon: '🔧', name: 'Practice Problems', btnClass: 'bg-rose-600 hover:bg-rose-700' },
-      review: { icon: '📚', name: 'Topic Review', btnClass: 'bg-indigo-600 hover:bg-indigo-700' }
+      summary: { icon: '📝', name: 'Comprehensive Summary', badgeBg: 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400' },
+      flashcards: { icon: '🃏', name: 'Spaced Flashcards (SRS)', badgeBg: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400' },
+      quiz: { icon: '📊', name: '10-Question MCQ Quiz', badgeBg: 'bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-400' },
+      explainer: { icon: '💡', name: 'Concept Explainer', badgeBg: 'bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400' },
+      practice: { icon: '🔧', name: 'Practice Problems', badgeBg: 'bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400' },
+      review: { icon: '📚', name: 'Topic Exam Review', badgeBg: 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400' }
     };
 
     container.innerHTML = Object.entries(topic.contentSlots).map(([type, slot]) => {
-      const t = contentTypes[type] || { icon: '📄', name: this.capitalize(type), btnClass: 'bg-primary-500 hover:bg-primary-600' };
+      const t = contentTypes[type] || { icon: '📄', name: this.capitalize(type), badgeBg: 'bg-slate-100 text-slate-700' };
       const isEmpty = slot.status === 'empty';
       const isCompleted = slot.completed === true;
 
       const statusChip = isEmpty
-        ? '<span class="bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300 px-2 py-1 rounded-full text-xs">Empty</span>'
+        ? '<span class="bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 px-2 py-0.5 rounded-full text-[10px] font-bold">Empty</span>'
         : isCompleted
-          ? '<span class="bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300 px-2 py-1 rounded-full text-xs font-medium">✓ Completed</span>'
-          : '<span class="bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 px-2 py-1 rounded-full text-xs">Ready</span>';
+          ? '<span class="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 px-2 py-0.5 rounded-full text-[10px] font-bold">✓ Completed</span>'
+          : '<span class="bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300 px-2 py-0.5 rounded-full text-[10px] font-bold">Ready</span>';
 
       const actions = isEmpty ? `
-        <button onclick="app.openContent('${type}', '${topic.id}')" class="w-full ${t.btnClass} text-white p-2.5 rounded-lg text-sm font-medium transition-colors">
-          📋 Get Prompt & Create Content
+        <button onclick="app.openContent('${type}', '${topic.id}')" class="w-full bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 hover:bg-primary-600 hover:text-white dark:hover:bg-primary-600 p-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center space-x-1.5">
+          <span>✨</span><span>Generate ${this.capitalize(type)}</span>
         </button>
       ` : `
-        <div class="flex flex-wrap gap-2">
+        <div class="flex items-center space-x-2">
           ${type === 'quiz' ? `
-            <button onclick="app.openQuiz('${topic.id}')" class="flex-1 bg-purple-600 text-white p-2 rounded-lg text-sm font-medium hover:bg-purple-700 transition-colors">
+            <button onclick="app.openQuiz('${topic.id}')" class="flex-1 bg-purple-600 hover:bg-purple-700 text-white p-2 rounded-xl text-xs font-bold transition shadow-sm">
               🎯 Take Quiz
             </button>
           ` : `
-            <button onclick="app.openContent('${type}', '${topic.id}')" class="flex-1 bg-gray-600 dark:bg-gray-700 text-white p-2 rounded-lg text-sm font-medium hover:bg-gray-700 dark:hover:bg-gray-600 transition-colors">
-              👁️ View Content
+            <button onclick="app.openContent('${type}', '${topic.id}')" class="flex-1 bg-slate-800 hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600 text-white p-2 rounded-xl text-xs font-bold transition shadow-sm">
+              👁️ View Material
             </button>
           `}
           ${isCompleted ? `
-            <button onclick="app.unmarkContentCompleted('${type}', '${topic.id}')" class="px-3 bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200 p-2 rounded-lg text-sm hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">Undo</button>
+            <button onclick="app.unmarkContentCompleted('${type}', '${topic.id}')" class="px-3 bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 p-2 rounded-xl text-xs font-bold hover:bg-slate-300 transition">Undo</button>
           ` : `
-            <button onclick="app.markContentCompleted('${type}', '${topic.id}')" class="px-3 bg-green-600 text-white p-2 rounded-lg text-sm hover:bg-green-700 transition-colors">Mark Done</button>
+            <button onclick="app.markContentCompleted('${type}', '${topic.id}')" class="px-3 bg-emerald-600 text-white p-2 rounded-xl text-xs font-bold hover:bg-emerald-700 transition">Done</button>
           `}
-          <button onclick="app.openContent('${type}', '${topic.id}')" aria-label="Edit content" class="px-3 bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200 p-2 rounded-lg text-sm hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">✏️</button>
+          <button onclick="app.openContent('${type}', '${topic.id}')" aria-label="Edit content" class="px-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 p-2 rounded-xl text-xs hover:bg-slate-200 transition">✏️</button>
         </div>
       `;
 
       return `
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-4 rounded-lg">
-          <div class="flex items-center justify-between mb-2">
-            <div class="flex items-center space-x-2">
-              <span class="text-lg">${t.icon}</span>
-              <span class="font-medium text-gray-800 dark:text-gray-100">${escapeHtml(t.name)}</span>
+        <div class="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 p-4 rounded-2xl">
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center space-x-2.5">
+              <span class="w-8 h-8 rounded-xl ${t.badgeBg} flex items-center justify-center text-sm">${t.icon}</span>
+              <span class="font-bold text-slate-900 dark:text-white text-xs">${escapeHtml(t.name)}</span>
             </div>
             <div>${statusChip}</div>
           </div>
-          <div class="space-y-2">
-            ${actions}
-            ${slot.lastUpdated ? `<p class="text-xs text-gray-500 dark:text-gray-400">Last updated: ${new Date(slot.lastUpdated).toLocaleDateString()}</p>` : ''}
-          </div>
+          <div>${actions}</div>
         </div>
       `;
     }).join('');
@@ -1052,7 +275,7 @@ class StudyBuddyApp {
     this.data.currentContent = { type, topicId };
 
     const map = {
-      summary: 'Summary',
+      summary: 'Comprehensive Summary',
       flashcards: 'Flashcards',
       quiz: 'Quiz',
       explainer: 'Concept Explainer',
@@ -1143,9 +366,8 @@ class StudyBuddyApp {
       return { error: 'Quiz must be valid JSON (quiz_mcq_v1). Please paste only the JSON block.' };
     }
 
-    // Reading types: strip outer markdown code fences if wrapped by the LLM
     if (maybeJson && !response.includes('#')) {
-      return { error: 'Reading content must be plain Markdown (no JSON). Please regenerate and paste Markdown only.' };
+      return { error: 'Reading content must be plain Markdown. Please regenerate and paste Markdown only.' };
     }
 
     let md = response.trim();
@@ -1155,9 +377,6 @@ class StudyBuddyApp {
     }
 
     if (!md) return { error: 'Empty content. Paste Markdown only.' };
-    if (!/^#+\s/m.test(md)) {
-      return { error: 'Markdown must include headings (##, ###). Please format with headings.' };
-    }
     return { schema_version: 'md_v1', markdown: md };
   }
 
@@ -1178,14 +397,6 @@ class StudyBuddyApp {
     if (parsed.error) {
       this.showToast(parsed.error, 'error');
       return;
-    }
-
-    // Soft warnings for reading types
-    if (parsed.schema_version === 'md_v1' && ['summary', 'explainer', 'practice', 'review'].includes(type)) {
-      const warnList = this.validateReadingMarkdown(parsed.markdown, type);
-      if (warnList.length) {
-        this.showToast(`Heads up: missing ${warnList.slice(0, 3).join(', ')}`, 'warning');
-      }
     }
 
     const courseIndex = this.data.courses.findIndex(c => c.id === this.data.currentCourse.id);
@@ -1237,21 +448,19 @@ class StudyBuddyApp {
     const container = document.getElementById('parsed-content');
     if (!container) return;
 
-    // Handle Markdown content
     if (content?.schema_version === 'md_v1' || typeof content?.markdown === 'string' || (typeof content === 'string' && content.trim())) {
       const mdText = content.markdown || (typeof content === 'string' ? content : '');
       container.innerHTML = this.renderMarkdown(mdText);
       return;
     }
 
-    // Handle Quiz preview
     if (type === 'quiz' && (content?.questions || content?.items)) {
       const questions = content.questions || content.items || [];
       const total = content.totalQuestions || questions.length;
       container.innerHTML = `
-        <div class="bg-purple-50 dark:bg-purple-900/20 p-4 rounded-lg mb-4 border border-purple-200 dark:border-purple-800/40">
-          <h3 class="font-semibold text-purple-800 dark:text-purple-300 mb-1">Quiz Overview</h3>
-          <p class="text-sm text-purple-600 dark:text-purple-400">Total Questions: ${total}</p>
+        <div class="bg-purple-50 dark:bg-purple-950/30 p-4 rounded-2xl mb-4 border border-purple-200 dark:border-purple-800/40">
+          <h3 class="font-bold text-purple-900 dark:text-purple-300 text-xs uppercase tracking-wider mb-1">Quiz Overview</h3>
+          <p class="text-xs text-purple-700 dark:text-purple-400 font-medium">Total Questions: ${total}</p>
         </div>
         <div class="space-y-3">
           ${questions.slice(0, 3).map((q, i) => {
@@ -1261,66 +470,47 @@ class StudyBuddyApp {
               corr = q.options.findIndex(o => typeof o === 'object' && o !== null && o.isCorrect === true);
             }
             return `
-              <div class="bg-gray-50 dark:bg-gray-800 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
-                <p class="font-medium text-gray-800 dark:text-gray-100 mb-2">${i + 1}. ${escapeHtml(q.text || q.stem)}</p>
-                <div class="text-sm text-gray-700 dark:text-gray-300 space-y-1">
+              <div class="bg-slate-50 dark:bg-slate-850 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-800">
+                <p class="font-bold text-slate-900 dark:text-white text-xs mb-2">${i + 1}. ${escapeHtml(q.text || q.stem)}</p>
+                <div class="text-xs text-slate-700 dark:text-slate-300 space-y-1.5">
                   ${opts.map((opt, j) => `
                     <div class="flex items-center space-x-2">
-                      <span class="${j === corr ? 'text-green-600 dark:text-green-400 font-medium' : ''}">${String.fromCharCode(65 + j)}) ${escapeHtml(opt)}</span>
-                      ${j === corr ? '<span class="text-green-600 dark:text-green-400 font-bold">✓</span>' : ''}
+                      <span class="${j === corr ? 'text-emerald-600 dark:text-emerald-400 font-bold' : ''}">${String.fromCharCode(65 + j)}) ${escapeHtml(opt)}</span>
+                      ${j === corr ? '<span class="text-emerald-600 dark:text-emerald-400 font-bold">✓</span>' : ''}
                     </div>
                   `).join('')}
                 </div>
               </div>
             `;
           }).join('')}
-          ${questions.length > 3 ? `<p class="text-sm text-gray-500 text-center">... and ${questions.length - 3} more questions</p>` : ''}
+          ${questions.length > 3 ? `<p class="text-xs text-slate-400 text-center font-medium">... and ${questions.length - 3} more questions</p>` : ''}
         </div>
       `;
       return;
     }
 
-    // Handle Flashcards preview
     if (content?.cards) {
       const total = content.totalCards || content.cards.length;
       const currentTopicId = this.data.currentTopic?.id || '';
       container.innerHTML = `
-        <div class="bg-green-50 dark:bg-green-900/20 p-4 rounded-lg mb-4 border border-green-200 dark:border-green-800/40">
-          <div class="flex items-center justify-between">
-            <div>
-              <h3 class="font-semibold text-green-800 dark:text-green-300 mb-1">Flashcards</h3>
-              <p class="text-sm text-green-700 dark:text-green-400">Total Cards: ${total}</p>
-            </div>
-            <button type="button"
-                    data-start-flashcards
-                    data-topic-id="${currentTopicId}"
-                    class="px-3.5 py-2 bg-primary-500 text-white font-medium rounded-lg hover:bg-primary-600 shadow-sm transition-colors text-xs">
-              Study Now
-            </button>
+        <div class="bg-emerald-50 dark:bg-emerald-950/30 p-4 rounded-2xl mb-4 border border-emerald-200 dark:border-emerald-800/40 flex items-center justify-between">
+          <div>
+            <h3 class="font-bold text-emerald-900 dark:text-emerald-300 text-xs uppercase tracking-wider mb-0.5">Spaced Flashcards</h3>
+            <p class="text-xs text-emerald-700 dark:text-emerald-400 font-medium">Total Deck Size: ${total} cards</p>
           </div>
-        </div>
-        <div class="space-y-3">
-          ${content.cards.slice(0, 5).map(card => `
-            <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-4 rounded-lg">
-              <div class="mb-2">
-                <span class="text-xs uppercase tracking-wider font-semibold text-gray-500">Front</span>
-                <p class="text-gray-800 dark:text-gray-100 mt-1">${escapeHtml(card.front)}</p>
-              </div>
-              <div>
-                <span class="text-xs uppercase tracking-wider font-semibold text-gray-500">Back</span>
-                <p class="text-gray-700 dark:text-gray-300 mt-1 whitespace-pre-wrap">${escapeHtml(card.back)}</p>
-              </div>
-            </div>
-          `).join('')}
-          ${total > 5 ? `<p class="text-sm text-gray-500 text-center">... and ${total - 5} more cards</p>` : ''}
+          <button type="button"
+                  data-start-flashcards
+                  data-topic-id="${currentTopicId}"
+                  class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md transition text-xs">
+            Study Deck 🃏
+          </button>
         </div>
       `;
       return;
     }
 
-    // Generic fallback
     const rawVal = content?.markdown || content?.content || (typeof content === 'object' ? JSON.stringify(content, null, 2) : String(content || ''));
-    container.innerHTML = `<div class="text-gray-700 dark:text-gray-300 whitespace-pre-wrap font-mono text-xs">${escapeHtml(rawVal)}</div>`;
+    container.innerHTML = `<div class="text-slate-700 dark:text-slate-300 whitespace-pre-wrap font-mono text-xs">${escapeHtml(rawVal)}</div>`;
   }
 
   cancelContentEdit() {
@@ -1358,14 +548,14 @@ class StudyBuddyApp {
       completed: false
     };
     this.saveData(false);
-    this.showToast('Content deleted successfully', 'success');
+    this.showToast('Content deleted', 'info');
 
     this.data.currentTopic = this.data.courses[courseIndex].topics[topicIndex];
     this.loadContentView({ type, topicId });
     this.loadContentSlots(this.data.currentTopic);
   }
 
-  // Flashcards SRS
+  // 3D Animated Flashcards SRS
   openFlashcardsStudy(topicId = null) {
     let topic = topicId ? this.findTopicById(this.data.currentCourse, topicId) : this.data.currentTopic;
 
@@ -1407,7 +597,7 @@ class StudyBuddyApp {
       srsRef: srs,
       deck,
       index: 0,
-      showBack: false,
+      flipped: false,
       seen: 0,
       total: deck.length
     };
@@ -1426,18 +616,22 @@ class StudyBuddyApp {
 
   _flipFlashcard() {
     if (!this._flash) return;
-    this._flash.showBack = !this._flash.showBack;
-    this._renderFlashcardFaces();
+    this._flash.flipped = !this._flash.flipped;
+    const cardEl = document.getElementById('flashcard-card-inner');
+    if (cardEl) {
+      cardEl.classList.toggle('rotate-y-180', this._flash.flipped);
+    }
   }
 
   _nextFlashcard() {
     if (!this._flash) return;
     if (this._flash.index < this._flash.total - 1) {
       this._flash.index++;
-      this._flash.showBack = false;
+      this._flash.flipped = false;
+      const cardEl = document.getElementById('flashcard-card-inner');
+      if (cardEl) cardEl.classList.remove('rotate-y-180');
       this._renderFlashcard();
     } else {
-      // Mark topic flashcards as completed when session completes
       const courseIdx = this.data.courses.findIndex(c => c.id === this.data.currentCourse?.id);
       if (courseIdx >= 0) {
         const tIdx = this.data.courses[courseIdx].topics.findIndex(t => t.id === this._flash.topicId);
@@ -1449,6 +643,7 @@ class StudyBuddyApp {
           }
         }
       }
+      playSoundChime('success');
       this.showToast('Session complete 🎉', 'success');
       this.recordActivity();
       this.closeFlashcardsStudy();
@@ -1462,7 +657,9 @@ class StudyBuddyApp {
     if (!this._flash) return;
     if (this._flash.index > 0) {
       this._flash.index--;
-      this._flash.showBack = false;
+      this._flash.flipped = false;
+      const cardEl = document.getElementById('flashcard-card-inner');
+      if (cardEl) cardEl.classList.remove('rotate-y-180');
       this._renderFlashcard();
     }
   }
@@ -1503,7 +700,8 @@ class StudyBuddyApp {
 
   _renderFlashcard() {
     if (!this._flash) return;
-    const { index, total } = this._flash;
+    const { index, total, deck, srsRef } = this._flash;
+    const card = deck[index];
 
     const countsEl = document.getElementById('flash-counts');
     if (countsEl) countsEl.textContent = `Card ${index + 1} of ${total}`;
@@ -1514,36 +712,17 @@ class StudyBuddyApp {
     if (bar) bar.style.width = `${progress}%`;
     if (ptext) ptext.textContent = `${progress}% completed`;
 
-    this._renderFlashcardFaces();
-    this._renderFlashFooterInfo();
-  }
-
-  _renderFlashcardFaces() {
-    const { deck, index, showBack } = this._flash;
-    const card = deck[index];
     const frontEl = document.getElementById('flash-front');
     const backEl = document.getElementById('flash-back');
-
     if (frontEl) frontEl.textContent = card.front || '';
     if (backEl) backEl.textContent = card.back || '';
 
-    if (showBack) {
-      backEl?.classList.remove('hidden');
-      frontEl?.classList.add('hidden');
-    } else {
-      frontEl?.classList.remove('hidden');
-      backEl?.classList.add('hidden');
-    }
-  }
-
-  _renderFlashFooterInfo() {
     const info = document.getElementById('flash-due-info');
-    if (!info || !this._flash) return;
-    const { deck, index, srsRef } = this._flash;
-    const card = deck[index];
-    const st = srsRef[card.id];
-    if (!st) { info.textContent = 'Status: New Card'; return; }
-    info.textContent = `Ease ${st.ease.toFixed(2)} • Interval ${st.interval}d • Due ${st.due}`;
+    if (info) {
+      const st = srsRef[card.id];
+      if (!st) { info.textContent = 'Status: New Card'; }
+      else { info.textContent = `Ease ${st.ease.toFixed(2)} • Interval ${st.interval}d • Due ${st.due}`; }
+    }
   }
 
   _wireFlashModal() {
@@ -1563,7 +742,7 @@ class StudyBuddyApp {
       else if (e.key === '4') this._gradeFlashcard(5);
     });
 
-    document.getElementById('flashcard-face')?.addEventListener('click', () => this._flipFlashcard());
+    document.getElementById('flashcard-card-inner')?.addEventListener('click', () => this._flipFlashcard());
     document.getElementById('flash-close-btn')?.addEventListener('click', () => this.closeFlashcardsStudy());
     document.getElementById('flash-flip-btn')?.addEventListener('click', () => this._flipFlashcard());
     document.getElementById('flash-next-btn')?.addEventListener('click', () => this._nextFlashcard());
@@ -1573,6 +752,14 @@ class StudyBuddyApp {
     document.getElementById('flash-grade-hard')?.addEventListener('click', () => this._gradeFlashcard(3));
     document.getElementById('flash-grade-good')?.addEventListener('click', () => this._gradeFlashcard(4));
     document.getElementById('flash-grade-easy')?.addEventListener('click', () => this._gradeFlashcard(5));
+
+    document.getElementById('flash-tts-btn')?.addEventListener('click', () => {
+      if (!this._flash) return;
+      const card = this._flash.deck[this._flash.index];
+      const text = this._flash.flipped ? card.back : card.front;
+      const u = new SpeechSynthesisUtterance(text);
+      window.speechSynthesis?.speak(u);
+    });
   }
 
   // Quiz Engine
@@ -1674,16 +861,14 @@ class StudyBuddyApp {
 
     const optionsContainer = document.getElementById('question-options');
     optionsContainer.innerHTML = q.options.map((opt, idx) => `
-      <label class="flex items-center space-x-3 p-3 border border-gray-200 dark:border-gray-700 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors">
-        <input type="radio" name="quiz-option" value="${idx}" class="text-primary-500 focus:ring-primary-500">
-        <span class="flex-1 text-gray-800 dark:text-gray-200">${escapeHtml(opt)}</span>
+      <label class="flex items-center space-x-3 p-3.5 border border-slate-200 dark:border-slate-800 rounded-xl cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/80 transition-colors">
+        <input type="radio" name="quiz-option" value="${idx}" class="text-primary-600 focus:ring-primary-500">
+        <span class="flex-1 text-slate-800 dark:text-slate-200 text-xs font-medium">${escapeHtml(opt)}</span>
       </label>
     `).join('');
 
-    // Remove prior feedback
     document.querySelector('#quiz-question .quiz-feedback')?.remove();
 
-    // Re-select if already answered
     const answered = this.currentQuiz.answers[this.currentQuiz.currentQuestion];
     const prevBtn = document.getElementById('quiz-prev-btn');
     const submitBtn = document.getElementById('quiz-submit-btn');
@@ -1723,9 +908,9 @@ class StudyBuddyApp {
     optionsContainer.querySelectorAll('input').forEach(i => i.disabled = true);
     optionsContainer.querySelectorAll('label').forEach((label, idx) => {
       if (idx === q.correctAnswer) {
-        label.classList.add('bg-green-100', 'border-green-300', 'dark:bg-green-900/40', 'dark:border-green-700');
+        label.classList.add('bg-emerald-50', 'border-emerald-300', 'dark:bg-emerald-950/40', 'dark:border-emerald-700');
       } else if (idx === answerIndex && !isCorrect) {
-        label.classList.add('bg-red-100', 'border-red-300', 'dark:bg-red-900/40', 'dark:border-red-700');
+        label.classList.add('bg-red-50', 'border-red-300', 'dark:bg-red-950/40', 'dark:border-red-700');
       }
     });
 
@@ -1745,17 +930,17 @@ class StudyBuddyApp {
     const correctOpt = question.options[question.correctAnswer];
 
     const div = document.createElement('div');
-    div.className = `quiz-feedback mt-4 p-3 rounded-lg ${
-      isCorrect ? 'bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800' : 'bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800'
+    div.className = `quiz-feedback mt-3 p-3 rounded-xl ${
+      isCorrect ? 'bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800' : 'bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800'
     }`;
     div.innerHTML = `
-      <div class="flex items-center space-x-2 mb-1">
-        <span class="${isCorrect ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'} font-semibold">
+      <div class="flex items-center space-x-1.5 mb-1">
+        <span class="${isCorrect ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'} font-bold text-xs">
           ${isCorrect ? '✅ Correct!' : '❌ Incorrect'}
         </span>
       </div>
-      ${feedback ? `<p class="text-sm text-gray-700 dark:text-gray-300">${escapeHtml(feedback)}</p>` : ''}
-      ${!isCorrect ? `<p class="text-sm font-medium text-gray-800 dark:text-gray-200 mt-1">Correct answer: ${escapeHtml(correctOpt)}</p>` : ''}
+      ${feedback ? `<p class="text-xs text-slate-700 dark:text-slate-300 font-medium">${escapeHtml(feedback)}</p>` : ''}
+      ${!isCorrect ? `<p class="text-xs font-bold text-slate-800 dark:text-slate-200 mt-1">Correct answer: ${escapeHtml(correctOpt)}</p>` : ''}
     `;
     document.getElementById('quiz-question').appendChild(div);
   }
@@ -1831,6 +1016,8 @@ class StudyBuddyApp {
     document.getElementById('quiz-results').classList.remove('hidden');
     document.getElementById('quiz-question-card').classList.add('hidden');
     document.getElementById('quiz-controls').style.display = 'none';
+
+    playSoundChime('success');
   }
 
   updateQuizProgress() {
@@ -1881,26 +1068,26 @@ class StudyBuddyApp {
       const isCorrect = user === q.correctAnswer;
 
       return `
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-4 rounded-lg mb-3">
+        <div class="bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-800 p-4 rounded-2xl mb-2.5">
           <div class="flex items-start justify-between mb-2">
-            <p class="font-medium text-gray-800 dark:text-gray-100">${i + 1}. ${escapeHtml(q.text)}</p>
-            <span class="text-xs px-2 py-0.5 rounded ${isCorrect ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'}">
+            <p class="font-bold text-slate-900 dark:text-white text-xs">${i + 1}. ${escapeHtml(q.text)}</p>
+            <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${isCorrect ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300'}">
               ${isCorrect ? 'Correct' : 'Missed'}
             </span>
           </div>
-          <div class="space-y-1.5 mt-2 text-sm">
+          <div class="space-y-1.5 text-xs">
             ${q.options.map((opt, idx) => {
               const isSelected = idx === user;
               const isAnswer = idx === q.correctAnswer;
-              let highlight = 'text-gray-600 dark:text-gray-400';
-              if (isAnswer) highlight = 'text-green-600 dark:text-green-400 font-semibold';
+              let highlight = 'text-slate-600 dark:text-slate-400';
+              if (isAnswer) highlight = 'text-emerald-600 dark:text-emerald-400 font-bold';
               if (isSelected && !isAnswer) highlight = 'text-red-500 font-medium line-through';
 
               return `
                 <div class="flex items-center space-x-2">
                   <span class="${highlight}">${String.fromCharCode(65 + idx)}) ${escapeHtml(opt)}</span>
-                  ${isSelected ? '<span class="text-xs bg-gray-200 dark:bg-gray-700 px-1.5 py-0.5 rounded">Your Choice</span>' : ''}
-                  ${isAnswer ? '<span class="text-green-600 dark:text-green-400">✓</span>' : ''}
+                  ${isSelected ? '<span class="text-[10px] bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 rounded font-bold">Your Choice</span>' : ''}
+                  ${isAnswer ? '<span class="text-emerald-600 dark:text-emerald-400">✓</span>' : ''}
                 </div>
               `;
             }).join('')}
@@ -1913,6 +1100,60 @@ class StudyBuddyApp {
   backToQuizResults() {
     document.getElementById('quiz-review-card').classList.add('hidden');
     document.getElementById('quiz-results').classList.remove('hidden');
+  }
+
+  // Exports: Anki TSV and Markdown Guide
+  exportAnkiTopic() {
+    const topic = this.data.currentTopic;
+    const cards = topic?.contentSlots?.flashcards?.content?.cards || [];
+    if (!cards.length) {
+      this.showToast('No flashcards to export in this topic', 'warning');
+      return;
+    }
+
+    const tsvContent = cards.map(c => {
+      const front = (c.front || '').replace(/\t/g, ' ').replace(/\n/g, '<br>');
+      const back = (c.back || '').replace(/\t/g, ' ').replace(/\n/g, '<br>');
+      const tags = (c.tags || []).join(' ');
+      return `${front}\t${back}\t${tags}`;
+    }).join('\n');
+
+    const blob = new Blob([tsvContent], { type: 'text/tab-separated-values;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${(topic.name || 'study-deck').toLowerCase().replace(/\s+/g, '-')}-anki.tsv`;
+    a.click();
+    this.showToast('Exported Anki TSV file ready to import! 🃏', 'success');
+  }
+
+  exportCourseMarkdown() {
+    const course = this.data.currentCourse;
+    if (!course || !course.topics?.length) {
+      this.showToast('No topics available to export', 'warning');
+      return;
+    }
+
+    let md = `# ${course.name}\n\n${course.description || ''}\n\n---\n\n`;
+    for (const t of course.topics) {
+      md += `## Topic: ${t.name} (${t.difficulty})\n\n`;
+      if (t.contentSlots?.summary?.content?.markdown) {
+        md += `### Summary\n\n${t.contentSlots.summary.content.markdown}\n\n`;
+      }
+      if (t.contentSlots?.explainer?.content?.markdown) {
+        md += `### Concept Explainer\n\n${t.contentSlots.explainer.content.markdown}\n\n`;
+      }
+      if (t.contentSlots?.practice?.content?.markdown) {
+        md += `### Practice Problems\n\n${t.contentSlots.practice.content.markdown}\n\n`;
+      }
+      md += `---\n\n`;
+    }
+
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${course.name.toLowerCase().replace(/\s+/g, '-')}-study-guide.md`;
+    a.click();
+    this.showToast('Downloaded Markdown Study Guide! 📥', 'success');
   }
 
   // Prompts & Modals
@@ -2069,7 +1310,6 @@ Wrap in \`\`\`markdown. Structure: Topic Mastery Checklist, Quick Reference Shee
 
     for (const course of this.data.courses) {
       for (const topic of course.topics || []) {
-        // 1. Spaced Repetition reviews due
         const fcSlot = topic.contentSlots?.flashcards;
         if (fcSlot?.status === 'filled' && fcSlot?.content?.cards?.length) {
           const srs = fcSlot.srs?.cards || {};
@@ -2092,7 +1332,6 @@ Wrap in \`\`\`markdown. Structure: Topic Mastery Checklist, Quick Reference Shee
           }
         }
 
-        // 2. Pending content generations
         for (const [type, slot] of Object.entries(topic.contentSlots || {})) {
           if (slot.status === 'empty') {
             items.push({
@@ -2112,8 +1351,8 @@ Wrap in \`\`\`markdown. Structure: Topic Mastery Checklist, Quick Reference Shee
 
     if (!items.length) {
       queueEl.innerHTML = `
-        <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded-lg text-center text-gray-500 dark:text-gray-400">
-          <p class="text-sm">No items in your queue!</p>
+        <div class="bg-slate-50 dark:bg-slate-850 p-6 rounded-2xl text-center text-slate-500 border border-slate-200 dark:border-slate-800">
+          <p class="text-sm font-semibold">No items in your queue!</p>
           <p class="text-xs mt-1">All up to date. Add courses or generate more content.</p>
         </div>
       `;
@@ -2123,18 +1362,52 @@ Wrap in \`\`\`markdown. Structure: Topic Mastery Checklist, Quick Reference Shee
     items.sort((a, b) => a.priority - b.priority || a.label.localeCompare(b.label));
 
     queueEl.innerHTML = items.slice(0, 10).map((it, i) => `
-      <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-4 rounded-lg flex items-center justify-between">
+      <div class="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 p-3.5 rounded-2xl flex items-center justify-between">
         <div class="pr-2">
-          <p class="font-medium text-gray-800 dark:text-gray-200 text-sm">${i + 1}. ${escapeHtml(it.label)}</p>
-          <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">${it.kind === 'review' ? 'Spaced Repetition Due' : 'Pending Content Generation'}</p>
+          <p class="font-bold text-slate-900 dark:text-white text-xs">${i + 1}. ${escapeHtml(it.label)}</p>
+          <p class="text-[11px] text-slate-400 mt-0.5">${it.kind === 'review' ? '⚡ Spaced Repetition Due' : '📝 Pending Content'}</p>
         </div>
-        <button class="px-3.5 py-1.5 bg-primary-500 text-white font-medium rounded-lg text-xs hover:bg-primary-600 transition-colors" data-study-idx="${i}">Go</button>
+        <button class="px-3.5 py-1.5 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-xl text-xs transition" data-study-idx="${i}">Go</button>
       </div>
     `).join('');
 
     queueEl.querySelectorAll('button[data-study-idx]').forEach((btn, idx) => {
       btn.addEventListener('click', () => items[idx].go());
     });
+  }
+
+  markContentCompleted(type, topicId) {
+    const cIdx = this.data.courses.findIndex(c => c.id === this.data.currentCourse?.id);
+    if (cIdx < 0) return;
+    const tIdx = this.data.courses[cIdx].topics.findIndex(t => t.id === topicId);
+    if (tIdx < 0) return;
+    const slot = this.data.courses[cIdx].topics[tIdx].contentSlots[type];
+    if (!slot || slot.status === 'empty') {
+      this.showToast('Generate content before marking completed', 'warning');
+      return;
+    }
+    slot.completed = true;
+    slot.lastUpdated = new Date().toISOString();
+    this.recordActivity();
+    this.saveData(false);
+    this.showToast('Marked as completed ✅', 'success');
+    this.loadContentSlots(this.data.courses[cIdx].topics[tIdx]);
+    this.loadTopicDetail({ topicId });
+  }
+
+  unmarkContentCompleted(type, topicId) {
+    const cIdx = this.data.courses.findIndex(c => c.id === this.data.currentCourse?.id);
+    if (cIdx < 0) return;
+    const tIdx = this.data.courses[cIdx].topics.findIndex(t => t.id === topicId);
+    if (tIdx < 0) return;
+    const slot = this.data.courses[cIdx].topics[tIdx].contentSlots[type];
+    if (!slot) return;
+    slot.completed = false;
+    slot.lastUpdated = new Date().toISOString();
+    this.saveData(false);
+    this.showToast('Completion undone', 'info');
+    this.loadContentSlots(this.data.courses[cIdx].topics[tIdx]);
+    this.loadTopicDetail({ topicId });
   }
 
   renderMarkdown(md) {
@@ -2147,12 +1420,12 @@ Wrap in \`\`\`markdown. Structure: Topic Mastery Checklist, Quick Reference Shee
 
   showToast(message, type = 'info') {
     const toast = document.createElement('div');
-    const color = type === 'success' ? 'bg-green-600' :
+    const color = type === 'success' ? 'bg-emerald-600' :
                   type === 'error' ? 'bg-red-600' :
                   type === 'warning' ? 'bg-amber-500' : 'bg-primary-600';
 
-    toast.className = `p-3.5 px-4 rounded-xl shadow-lg text-white max-w-sm flex items-center space-x-2 text-sm transition-all duration-300 transform translate-y-2 opacity-0 ${color}`;
-    toast.innerHTML = `<span>${type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : 'ℹ️'}</span><span class="font-medium">${escapeHtml(message)}</span>`;
+    toast.className = `p-3 px-4 rounded-2xl shadow-xl text-white max-w-sm flex items-center space-x-2 text-xs font-bold transition-all duration-300 transform translate-y-2 opacity-0 ${color}`;
+    toast.innerHTML = `<span>${type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : 'ℹ️'}</span><span>${escapeHtml(message)}</span>`;
 
     const container = document.getElementById('toast-container');
     if (container) container.appendChild(toast);
@@ -2170,21 +1443,6 @@ Wrap in \`\`\`markdown. Structure: Topic Mastery Checklist, Quick Reference Shee
 
   capitalize(str) {
     return (str || '').charAt(0).toUpperCase() + (str || '').slice(1);
-  }
-
-  validateReadingMarkdown(md, type) {
-    const warnings = [];
-    const hasHeading = (variants) => {
-      const escaped = variants.map(s => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-      return new RegExp(`(^|\\n)\\s*#{2,4}\\s*(${escaped})\\b`, 'mi').test(md);
-    };
-
-    if (type === 'summary') {
-      if (!hasHeading(['Scope Map', 'What you will learn'])) warnings.push('Scope Map');
-      if (!/(^|\n)\s*#{2,4}\s*(TL;?DR)\b/mi.test(md)) warnings.push('TL;DR');
-      if (!hasHeading(['Self-Check', 'Self Check'])) warnings.push('Self-Check');
-    }
-    return warnings;
   }
 
   // Backup & Restore
@@ -2241,10 +1499,11 @@ Wrap in \`\`\`markdown. Structure: Topic Mastery Checklist, Quick Reference Shee
         courses: [],
         settings: {
           darkMode: false,
+          geminiApiKey: '',
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           personalization: this._getDefaultPrefs()
         },
-        stats: { streak: 0, lastActiveDate: null },
+        stats: { streak: 0, lastActiveDate: null, pomodoroSessions: 0 },
         currentView: 'dashboard',
         currentCourse: null,
         currentTopic: null,
