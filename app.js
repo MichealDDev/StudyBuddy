@@ -2458,6 +2458,31 @@ Note: correctAnswer is the 0-indexed number (0 for first option, 1 for second, 2
   }
 
   // Utilities
+  renderMath(element) {
+    if (!element) return;
+    const run = () => {
+      if (typeof renderMathInElement === 'function') {
+        try {
+          renderMathInElement(element, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$', right: '$', display: false },
+              { left: '\\(', right: '\\)', display: false },
+              { left: '\\[', right: '\\]', display: true }
+            ],
+            throwOnError: false
+          });
+        } catch (e) {
+          console.warn('KaTeX render error:', e);
+        }
+      }
+    };
+    if (typeof renderMathInElement === 'function') {
+      run();
+    } else {
+      setTimeout(run, 150);
+    }
+  }
   renderMarkdown(md) {
     if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
       const rawHtml = marked.parse(md || '');
