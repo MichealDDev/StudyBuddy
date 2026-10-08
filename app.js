@@ -29,51 +29,74 @@ function extractJsonFromText(text) {
   }
 }
 
+// Utility: Web Audio API sound chime (no external audio files needed)
+function playSoundChime(type = 'success') {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    if (type === 'success') {
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // A5
+    } else {
+      osc.frequency.setValueAtTime(659.25, ctx.currentTime); // E5
+      osc.frequency.exponentialRampToValueAtTime(523.25, ctx.currentTime + 0.15); // C5
+    }
+
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.35);
+  } catch {
+    // AudioContext blocked or not supported
+  }
+}
+
 class StudyBuddyApp {
   constructor() {
     this.data = {
       courses: [],
-      settings: {
-        darkMode: false,
-        geminiApiKey: '',
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        personalization: {
-          depth: 'standard',
-          examples: 'medium',
-          rigor: 'light',
-          readTime: 10,
-          difficulty: 'Intermediate',
-          citation: 'minimal',
-          flashcardsCount: 15
-        }
-      },
-      stats: {
-        streak: 0,
-        lastActiveDate: null
-      },
-      currentView: 'dashboard',
       currentCourse: null,
       currentTopic: null,
-      currentContent: null
+      currentContent: null,
+      settings: {
+        darkMode: false,
+        themeMode: 'auto', // 'auto' | 'dark' | 'light'
+        apiKey: '',
+        studyStreak: 0,
+        lastStudyDate: null,
+        focusMinutesTotal: 0,
+        personalization: {
+          depth: 'standard', // concise, standard, deep
+          examples: 'medium', // few, medium, many
+          rigor: 'standard', // light, standard, technical
+          difficulty: 'Intermediate' // Beginner, Intermediate, Advanced
+        }
+      },
+      currentView: 'dashboard'
     };
 
-    this.currentQuiz = null;
-    this.currentFlashcards = [];
-    this.currentFlashcardIndex = 0;
-    this.quizMasteryThreshold = 70;
+    this.currentQuiz = {
+      questions: [],
+      currentIndex: 0,
+      userAnswers: [],
+      score: 0,
+      timer: null,
+      seconds: 0,
+      locked: false,
+      isReviewMode: false
+    };
 
-    // Pomodoro Timer State
     this.pomodoro = {
+      timer: null,
+      mode: 'work', // work, short, long
       timeLeft: 25 * 60,
-      initialTime: 25 * 60,
-      mode: 'work', // 'work' | 'shortBreak' | 'longBreak'
-      running: false,
-      intervalId: null,
-      sessionsCompleted: 0
+      running: false
     };
-
-    // Text-to-Speech State
-    this.isSpeaking = false;
 
     this.init();
   }
@@ -81,39 +104,124 @@ class StudyBuddyApp {
   init() {
     this.loadData();
     this.migrateDataSchema();
+    this.initDarkModeState();
     this.checkAndUpdateStreak();
-    this.applyDarkMode(this.data.settings.darkMode);
     this.setupEventListeners();
     this.updateDashboard();
-    this.initPomodoroUI();
     this.showView('dashboard');
   }
 
-  // --- Persistence ---
+  // Theme Management (Automatic System Detection + User Preference in Settings)
+  initDarkModeState() {
+    if (!this.data.settings) this.data.settings = {};
+    if (!this.data.settings.themeMode) {
+      if (typeof this.data.settings.darkMode === 'boolean') {
+        this.data.settings.themeMode = this.data.settings.darkMode ? 'dark' : 'light';
+      } else {
+        const stored = localStorage.getItem('theme');
+        this.data.settings.themeMode = (stored === 'dark' || stored === 'light' || stored === 'auto') ? stored : 'auto';
+      }
+    }
+
+    this.applyThemeMode(this.data.settings.themeMode);
+
+    // Watch for OS system dark mode changes in real-time
+    if (window.matchMedia) {
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      const listener = () => {
+        if (this.data.settings.themeMode === 'auto') {
+          this.applyThemeMode('auto');
+        }
+      };
+      if (mediaQuery.addEventListener) {
+        mediaQuery.addEventListener('change', listener);
+      } else if (mediaQuery.addListener) {
+        mediaQuery.addListener(listener);
+      }
+    }
+  }
+
+  applyThemeMode(mode) {
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    let isDark = prefersDark;
+
+    if (mode === 'dark') {
+      isDark = true;
+    } else if (mode === 'light') {
+      isDark = false;
+    } else {
+      mode = 'auto';
+      isDark = prefersDark;
+    }
+
+    document.documentElement.classList.toggle('dark', isDark);
+    this.data.settings.darkMode = isDark;
+    this.data.settings.themeMode = mode;
+
+    try {
+      localStorage.setItem('theme', mode);
+    } catch { }
+
+    this.updateThemeSettingsUI();
+  }
+
+  setThemeMode(mode) {
+    this.applyThemeMode(mode);
+    this.saveData(false);
+    const label = mode === 'auto' ? 'Automatic (System)' : (mode === 'dark' ? 'Dark Mode' : 'Light Mode');
+    this.showToast(`Theme set to ${label}`, 'info');
+  }
+
+  updateThemeSettingsUI() {
+    const select = document.getElementById('theme-mode-select');
+    const desc = document.getElementById('theme-mode-desc');
+    const mode = this.data.settings?.themeMode || 'auto';
+    if (select) select.value = mode;
+    if (desc) {
+      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      if (mode === 'auto') {
+        desc.textContent = `Automatic (currently ${prefersDark ? 'Dark' : 'Light'} from system)`;
+      } else if (mode === 'dark') {
+        desc.textContent = 'Always dark mode';
+      } else {
+        desc.textContent = 'Always light mode';
+      }
+    }
+  }
+
+  applyDarkMode(enabled) {
+    this.applyThemeMode(enabled ? 'dark' : 'light');
+  }
+
+  toggleTheme() {
+    const isDark = document.documentElement.classList.contains('dark');
+    this.setThemeMode(isDark ? 'light' : 'dark');
+  }
+
+  // Storage
   saveData(showToast = true) {
     try {
       localStorage.setItem('studyBuddyData', JSON.stringify(this.data));
-      if (showToast) this.showToast('Saved successfully', 'success');
-    } catch (error) {
-      this.showToast('Failed to save data', 'error');
+      if (showToast) this.showToast('Data saved successfully!', 'success');
+    } catch (e) {
+      this.showToast('Error saving data: ' + e.message, 'error');
     }
   }
 
   migrateDataSchema() {
     try {
-      for (const course of this.data.courses || []) {
-        for (const topic of course.topics || []) {
-          const slots = topic.contentSlots || {};
-          for (const key of Object.keys(slots)) {
-            const slot = slots[key] || {};
-            if (typeof slot.completed !== 'boolean') slot.completed = false;
-            if (key === 'quiz') {
-              if (!Array.isArray(slot.attempts)) slot.attempts = [];
-              if (typeof slot.bestScore !== 'number') slot.bestScore = 0;
+      if (!Array.isArray(this.data.courses)) return;
+      for (const course of this.data.courses) {
+        if (!Array.isArray(course.topics)) continue;
+        for (const topic of course.topics) {
+          if (!topic.contentSlots) topic.contentSlots = {};
+          const validKeys = ['summary', 'explainer', 'flashcards', 'quiz'];
+          for (const k of validKeys) {
+            if (!topic.contentSlots[k]) {
+              topic.contentSlots[k] = { content: null, completed: false, lastStudied: null, srs: { cards: {} } };
             }
-            if (key === 'flashcards') {
-              if (!slot.srs) slot.srs = { cards: {} };
-            }
+            const slot = topic.contentSlots[k];
+            if (!slot.srs) slot.srs = { cards: {} };
           }
         }
       }
@@ -122,135 +230,472 @@ class StudyBuddyApp {
     }
 
     this.data.settings = this.data.settings || {};
-    this.data.settings.geminiApiKey = this.data.settings.geminiApiKey || '';
     this.data.settings.personalization = this.data.settings.personalization || {};
     const pp = this.data.settings.personalization;
     if (!pp.depth) pp.depth = 'standard';
     if (!pp.examples) pp.examples = 'medium';
-    if (!pp.rigor) pp.rigor = 'light';
-    if (typeof pp.readTime !== 'number') pp.readTime = 10;
+    if (!pp.rigor) pp.rigor = 'standard';
     if (!pp.difficulty) pp.difficulty = 'Intermediate';
-    if (!pp.citation) pp.citation = 'minimal';
-    if (typeof pp.flashcardsCount !== 'number') pp.flashcardsCount = 15;
 
-    this.data.stats = this.data.stats || { streak: 0, lastActiveDate: null };
+    if (typeof this.data.settings.studyStreak !== 'number') this.data.settings.studyStreak = 0;
+    if (typeof this.data.settings.focusMinutesTotal !== 'number') this.data.settings.focusMinutesTotal = 0;
   }
 
   loadData() {
     try {
-      const saved = localStorage.getItem('studyBuddyData');
-      if (saved) {
-        const loadedData = JSON.parse(saved);
-        this.data = { ...this.data, ...loadedData };
+      const data = localStorage.getItem('studyBuddyData');
+      if (data) {
+        this.data = { ...this.data, ...JSON.parse(data) };
       }
-    } catch (error) {
-      console.error('Failed to load data:', error);
+    } catch (e) {
+      console.error('Error loading data:', e);
+      this.showToast('Error loading saved data', 'error');
     }
   }
 
-  // --- Streak Tracking ---
   _today() {
     const d = new Date();
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
 
   _addDays(n) {
     const d = new Date();
     d.setDate(d.getDate() + n);
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
 
   checkAndUpdateStreak() {
     const today = this._today();
-    const last = this.data.stats.lastActiveDate;
+    const last = this.data.settings.lastStudyDate;
 
-    if (!last) {
-      this.data.stats.streak = 1;
-      this.data.stats.lastActiveDate = today;
+    if (!last) return;
+
+    const diffDays = Math.round((new Date(today) - new Date(last)) / (1000 * 60 * 60 * 24));
+    if (diffDays > 1) {
+      this.data.settings.studyStreak = 0;
       this.saveData(false);
-      return;
     }
 
-    if (last === today) return;
+    this._updateStreakDisplay();
+  }
 
-    const yesterday = this._addDays(-1);
-    if (last === yesterday) {
-      this.data.stats.streak += 1;
-    } else {
-      this.data.stats.streak = 1;
-    }
-    this.data.stats.lastActiveDate = today;
-    this.saveData(false);
+  _updateStreakDisplay() {
+    const streak = this.data.settings.studyStreak || 0;
+    const badgeCount = document.getElementById('header-streak-count');
+    const heroStreak = document.getElementById('study-streak');
+    if (badgeCount) badgeCount.textContent = streak;
+    if (heroStreak) heroStreak.textContent = streak;
   }
 
   recordActivity() {
-    this.checkAndUpdateStreak();
-    this.updateDashboard();
-  }
+    const today = this._today();
+    const last = this.data.settings.lastStudyDate;
 
-  // --- Audio Chimes ---
-  playAudioChime(type = 'complete') {
-    try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      if (type === 'complete') {
-        osc.frequency.setValueAtTime(523.25, ctx.currentTime); // C5
-        osc.frequency.setValueAtTime(659.25, ctx.currentTime + 0.12); // E5
-        osc.frequency.setValueAtTime(783.99, ctx.currentTime + 0.24); // G5
-        gain.gain.setValueAtTime(0.25, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.5);
-      } else if (type === 'alert') {
-        osc.frequency.setValueAtTime(440, ctx.currentTime);
-        osc.frequency.setValueAtTime(880, ctx.currentTime + 0.15);
-        gain.gain.setValueAtTime(0.3, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.4);
+    if (last !== today) {
+      const diff = last ? Math.round((new Date(today) - new Date(last)) / (1000 * 60 * 60 * 24)) : 1;
+      if (diff === 1 || !last) {
+        this.data.settings.studyStreak = (this.data.settings.studyStreak || 0) + 1;
+      } else if (diff > 1) {
+        this.data.settings.studyStreak = 1;
       }
-    } catch (e) {
-      // Audio context not allowed or unsupported
+      this.data.settings.lastStudyDate = today;
+      this.saveData(false);
+      this._updateStreakDisplay();
     }
   }
 
-  // --- Dark Mode ---
-  applyDarkMode(isDark) {
-    const html = document.documentElement;
-    if (isDark) {
-      html.classList.add('dark');
-      localStorage.setItem('theme', 'dark');
+  _getDefaultPrefs() {
+    return {
+      depth: 'standard',
+      examples: 'medium',
+      rigor: 'standard',
+      difficulty: 'Intermediate'
+    };
+  }
+
+  syncPreferencesUI() {
+    const prefs = this.data.settings?.personalization || this._getDefaultPrefs();
+    const d = document.getElementById('pref-depth');
+    const e = document.getElementById('pref-examples');
+    const r = document.getElementById('pref-rigor');
+    const diff = document.getElementById('pref-difficulty');
+
+    if (d) d.value = prefs.depth;
+    if (e) e.value = prefs.examples;
+    if (r) r.value = prefs.rigor;
+    if (diff) diff.value = prefs.difficulty;
+
+    const keyInput = document.getElementById('gemini-api-key');
+    if (keyInput) keyInput.value = this.data.settings.apiKey || '';
+
+    this.updateThemeSettingsUI();
+  }
+
+  _initPreferenceControls() {
+    const bindSelect = (id, key) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', (ev) => {
+        if (!this.data.settings.personalization) this.data.settings.personalization = this._getDefaultPrefs();
+        this.data.settings.personalization[key] = ev.target.value;
+        this.saveData(false);
+        this.showToast(`Preference updated: ${key} = ${ev.target.value}`, 'info');
+      });
+    };
+
+    bindSelect('pref-depth', 'depth');
+    bindSelect('pref-examples', 'examples');
+    bindSelect('pref-rigor', 'rigor');
+    bindSelect('pref-difficulty', 'difficulty');
+
+    // Theme Mode select listener
+    const themeSelect = document.getElementById('theme-mode-select');
+    if (themeSelect) {
+      themeSelect.addEventListener('change', (ev) => {
+        this.setThemeMode(ev.target.value);
+      });
+    }
+
+    // Direct Gemini API Key bind
+    document.getElementById('save-api-key-btn')?.addEventListener('click', () => {
+      const input = document.getElementById('gemini-api-key');
+      if (!input) return;
+      this.data.settings.apiKey = input.value.trim();
+      this.saveData();
+      this.showToast('API Key saved successfully', 'success');
+    });
+
+    document.getElementById('test-api-key-btn')?.addEventListener('click', async () => {
+      const key = this.data.settings.apiKey;
+      if (!key) {
+        this.showToast('Please enter an API Key first', 'error');
+        return;
+      }
+      this.showToast('Testing Gemini Connection...', 'info');
+      try {
+        const res = await this.callGeminiAPI('Respond with only the word: "OK"');
+        if (res && res.includes('OK')) {
+          this.showToast('Connected to Gemini successfully! ✨', 'success');
+          playSoundChime('success');
+        } else {
+          this.showToast('Received response from Gemini!', 'info');
+        }
+      } catch (err) {
+        this.showToast('API Key test failed: ' + err.message, 'error');
+      }
+    });
+  }
+
+  async callGeminiAPI(prompt) {
+    const apiKey = this.data.settings.apiKey;
+    if (!apiKey) {
+      throw new Error('No API key configured. Enter your key in Settings or use manual prompts.');
+    }
+
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{ text: prompt }]
+        }],
+        generationConfig: {
+          temperature: 0.4
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorJson = await response.json().catch(() => ({}));
+      const msg = errorJson.error?.message || `HTTP ${response.status} ${response.statusText}`;
+      throw new Error(msg);
+    }
+
+    const data = await response.json();
+    const candidate = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!candidate) throw new Error('Empty response returned by AI model.');
+    return candidate;
+  }
+
+  setupEventListeners() {
+    // Back Button
+    document.getElementById('back-btn')?.addEventListener('click', () => this.goBack());
+
+    // Course Creation
+    document.getElementById('add-course-btn')?.addEventListener('click', () => this.showAddCourseModal());
+    document.getElementById('add-course-form')?.addEventListener('submit', (e) => this.addCourse(e));
+    document.getElementById('cancel-course-btn')?.addEventListener('click', () => this.hideAddCourseModal());
+
+    // Search Filter
+    document.getElementById('course-search-input')?.addEventListener('input', (e) => this.filterCourses(e.target.value));
+
+    // Modals Backdrop Clicks & Escape key
+    window.addEventListener('click', (e) => {
+      if (e.target.id === 'add-course-modal') this.hideAddCourseModal();
+      if (e.target.id === 'flashcards-modal') this.closeFlashcardsStudy();
+      if (e.target.id === 'prompt-modal') this.hidePromptModal();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        this.hideAddCourseModal();
+        this.hidePromptModal();
+        this.closeFlashcardsStudy();
+      }
+    });
+
+    // Structure Handling
+    document.getElementById('ai-generate-structure-btn')?.addEventListener('click', () => this.autoGenerateStructureWithAI());
+    document.getElementById('get-structure-prompt-btn')?.addEventListener('click', () => this.showStructurePrompt());
+    document.getElementById('parse-structure-btn')?.addEventListener('click', () => this.parseStructureResponse());
+    document.getElementById('cancel-structure-paste-btn')?.addEventListener('click', () => {
+      document.getElementById('paste-structure-card').style.display = 'none';
+      document.getElementById('structure-prompt-card').style.display = 'block';
+    });
+
+    // Content Handling
+    document.getElementById('ai-generate-content-btn')?.addEventListener('click', () => this.autoGenerateContentWithAI());
+    document.getElementById('get-content-prompt-btn')?.addEventListener('click', () => this.showContentPrompt());
+    document.getElementById('save-content-btn')?.addEventListener('click', () => this.saveContent());
+    document.getElementById('cancel-content-btn')?.addEventListener('click', () => this.cancelContentEdit());
+    document.getElementById('edit-content-btn')?.addEventListener('click', () => this.editContent());
+    document.getElementById('delete-content-btn')?.addEventListener('click', () => this.deleteContent());
+
+    // Exports
+    document.getElementById('export-course-md-btn')?.addEventListener('click', () => this.exportCourseMarkdown());
+    document.getElementById('export-anki-topic-btn')?.addEventListener('click', () => this.exportAnkiTopic());
+
+    // Audio TTS
+    document.getElementById('tts-listen-btn')?.addEventListener('click', () => this.toggleTTS());
+
+    // Prompts modal
+    document.getElementById('close-prompt-modal')?.addEventListener('click', () => this.hidePromptModal());
+    document.getElementById('copy-prompt-btn')?.addEventListener('click', () => this.copyPromptToClipboard());
+
+    // Data controls
+    document.getElementById('export-data-btn')?.addEventListener('click', () => this.exportData());
+    document.getElementById('import-data-btn')?.addEventListener('click', () => this.importData());
+    document.getElementById('import-file-input')?.addEventListener('change', (e) => this.handleImportFile(e));
+    document.getElementById('clear-all-data-btn')?.addEventListener('click', () => this.clearAllData());
+
+    // Bottom Navigation
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const view = e.currentTarget.getAttribute('data-nav');
+        if (view) this.showView(view);
+      });
+    });
+
+    // Pomodoro listeners
+    this.setupPomodoroListeners();
+
+    // Quiz listeners
+    this.setupQuizEventListeners();
+    this._initPreferenceControls();
+  }
+
+  // 1-Click AI Generation for Course Structure
+  async autoGenerateStructureWithAI() {
+    if (!this.data.currentCourse) return;
+    const btn = document.getElementById('ai-generate-structure-btn');
+    const oldText = btn.innerHTML;
+
+    try {
+      btn.disabled = true;
+      btn.innerHTML = '<span>⏳</span><span>Generating Topics...</span>';
+
+      const prompt = `${this.getStructurePrompt()}\n\nCourse Title: "${this.data.currentCourse.name}"\nCourse Description: "${this.data.currentCourse.description || ''}"\n\nPlease output the structured topics now:`;
+      const response = await this.callGeminiAPI(prompt);
+
+      const parsed = this.parseStructureText(response);
+      if (!parsed || parsed.length === 0) {
+        throw new Error('AI responded, but no topics could be parsed from the structure format.');
+      }
+
+      this.data.currentCourse.topics = parsed;
+      this.saveData();
+      this.loadTopics();
+      playSoundChime('success');
+      this.showToast(`Generated ${parsed.length} topics automatically! 🎉`, 'success');
+    } catch (err) {
+      this.showToast('1-Click AI failed: ' + err.message, 'error');
+      // Fallback: switch to manual prompt view
+      this.showStructurePrompt();
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = oldText;
+    }
+  }
+
+  // 1-Click AI Generation for Content Slot
+  async autoGenerateContentWithAI() {
+    const course = this.data.currentCourse;
+    const topic = this.data.currentTopic;
+    const slotType = this.data.currentContent?.type;
+    if (!course || !topic || !slotType) return;
+
+    const btn = document.getElementById('ai-generate-content-btn');
+    const oldText = btn.innerHTML;
+
+    try {
+      btn.disabled = true;
+      btn.innerHTML = '<span>⏳</span><span>Generating Content...</span>';
+
+      const prompt = this.getContentPrompt(slotType, topic);
+      const response = await this.callGeminiAPI(prompt);
+
+      const input = document.getElementById('content-response');
+      if (input) input.value = response;
+
+      this.saveContent();
+      playSoundChime('success');
+      this.showToast('Content auto-generated & saved! ✨', 'success');
+    } catch (err) {
+      this.showToast('1-Click AI failed: ' + err.message, 'error');
+      this.showContentPrompt();
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = oldText;
+    }
+  }
+
+  // Text-To-Speech Reader
+  toggleTTS() {
+    if (!('speechSynthesis' in window)) {
+      this.showToast('Text-to-speech is not supported on this browser', 'error');
+      return;
+    }
+
+    const ttsBtn = document.getElementById('tts-listen-btn');
+    const ttsText = document.getElementById('tts-text');
+
+    if (window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+      if (ttsText) ttsText.textContent = 'Listen';
+      ttsBtn?.classList.remove('bg-rose-100', 'text-rose-700', 'dark:bg-rose-950/40', 'dark:text-rose-300');
+      return;
+    }
+
+    const contentDiv = document.getElementById('parsed-content');
+    if (!contentDiv || !contentDiv.textContent.trim()) {
+      this.showToast('No readable content available', 'info');
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(contentDiv.textContent);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+
+    utterance.onstart = () => {
+      if (ttsText) ttsText.textContent = 'Stop';
+      ttsBtn?.classList.add('bg-rose-100', 'text-rose-700', 'dark:bg-rose-950/40', 'dark:text-rose-300');
+    };
+
+    utterance.onend = utterance.onerror = () => {
+      if (ttsText) ttsText.textContent = 'Listen';
+      ttsBtn?.classList.remove('bg-rose-100', 'text-rose-700', 'dark:bg-rose-950/40', 'dark:text-rose-300');
+    };
+
+    window.speechSynthesis.speak(utterance);
+  }
+
+  // Pomodoro Focus Hub
+  setupPomodoroListeners() {
+    const el = id => document.getElementById(id);
+
+    el('pomo-mode-work')?.addEventListener('click', () => this.setPomodoroMode('work', 25 * 60));
+    el('pomo-mode-short')?.addEventListener('click', () => this.setPomodoroMode('short', 5 * 60));
+    el('pomo-mode-long')?.addEventListener('click', () => this.setPomodoroMode('long', 15 * 60));
+
+    el('pomo-toggle-btn')?.addEventListener('click', () => this.togglePomodoro());
+    el('pomo-reset-btn')?.addEventListener('click', () => this.resetPomodoro());
+  }
+
+  setPomodoroMode(mode, seconds) {
+    if (this.pomodoro.running) this.togglePomodoro();
+    this.pomodoro.mode = mode;
+    this.pomodoro.timeLeft = seconds;
+
+    // UI Pills
+    ['work', 'short', 'long'].forEach(m => {
+      const btn = document.getElementById(`pomo-mode-${m}`);
+      if (!btn) return;
+      if (m === mode) {
+        btn.className = 'px-4 py-1.5 rounded-lg bg-white dark:bg-slate-700 text-rose-600 dark:text-rose-400 shadow-sm transition';
+      } else {
+        btn.className = 'px-4 py-1.5 rounded-lg text-slate-600 dark:text-slate-400 transition';
+      }
+    });
+
+    const label = document.getElementById('pomo-status-label');
+    if (label) {
+      label.textContent = mode === 'work' ? 'Time to Focus' : (mode === 'short' ? 'Short Break' : 'Long Break');
+    }
+
+    this.updatePomodoroDisplay();
+  }
+
+  togglePomodoro() {
+    const btn = document.getElementById('pomo-toggle-btn');
+    if (this.pomodoro.running) {
+      clearInterval(this.pomodoro.timer);
+      this.pomodoro.running = false;
+      if (btn) btn.textContent = 'Start Focus';
     } else {
-      html.classList.remove('dark');
-      localStorage.setItem('theme', 'light');
+      this.pomodoro.running = true;
+      if (btn) btn.textContent = 'Pause Timer';
+      this.pomodoro.timer = setInterval(() => {
+        if (this.pomodoro.timeLeft > 0) {
+          this.pomodoro.timeLeft--;
+          this.updatePomodoroDisplay();
+        } else {
+          // Completed
+          clearInterval(this.pomodoro.timer);
+          this.pomodoro.running = false;
+          playSoundChime('success');
+          if (this.pomodoro.mode === 'work') {
+            this.recordActivity();
+            this.data.settings.focusMinutesTotal = (this.data.settings.focusMinutesTotal || 0) + 25;
+            this.saveData(false);
+            this.showToast('Pomodoro completed! Fantastic focus! Take a break. 🍵', 'success');
+          } else {
+            this.showToast('Break finished! Ready to get back into the zone? 🚀', 'info');
+          }
+          this.resetPomodoro();
+        }
+      }, 1000);
     }
-
-    const toggle = document.getElementById('dark-mode-toggle');
-    if (toggle) toggle.checked = !!isDark;
-
-    const ind = document.getElementById('dark-mode-indicator');
-    if (ind) ind.textContent = isDark ? 'Dark Mode' : 'Light Mode';
   }
 
-  toggleDarkMode() {
-    this.data.settings.darkMode = !this.data.settings.darkMode;
-    this.applyDarkMode(this.data.settings.darkMode);
-    this.saveData(false);
-    this.showToast(this.data.settings.darkMode ? 'Dark mode enabled' : 'Light mode enabled');
+  resetPomodoro() {
+    if (this.pomodoro.timer) clearInterval(this.pomodoro.timer);
+    this.pomodoro.running = false;
+    const defaultMins = this.pomodoro.mode === 'work' ? 25 : (this.pomodoro.mode === 'short' ? 5 : 15);
+    this.pomodoro.timeLeft = defaultMins * 60;
+    const btn = document.getElementById('pomo-toggle-btn');
+    if (btn) btn.textContent = 'Start Focus';
+    this.updatePomodoroDisplay();
   }
 
-  // --- View Navigation ---
-  showView(viewName) {
+  updatePomodoroDisplay() {
+    const mins = Math.floor(this.pomodoro.timeLeft / 60);
+    const secs = this.pomodoro.timeLeft % 60;
+    const display = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    const el = document.getElementById('pomo-timer-display');
+    if (el) el.textContent = display;
+
+    const completed = Math.floor((this.data.settings.focusMinutesTotal || 0) / 25);
+    const sessEl = document.getElementById('pomo-sessions-count');
+    if (sessEl) sessEl.textContent = completed;
+  }
+
+  // Navigation
+  showView(viewName, data = null) {
+    this.stopQuizTimer();
+
+    // Hide all views
     document.querySelectorAll('.view-content').forEach(view => {
       view.classList.add('hidden');
     });
@@ -261,1991 +706,1880 @@ class StudyBuddyApp {
       this.data.currentView = viewName;
     }
 
+    // Scroll to top on transition
+    window.scrollTo({ top: 0, behavior: 'instant' });
+
     this.updateHeader(viewName);
-    this.updateNav(viewName);
+    this.updateNavigation(viewName);
 
-    if (viewName === 'dashboard') {
-      this.updateDashboard();
-    } else if (viewName === 'prompts') {
-      this.updatePromptsView();
-    } else if (viewName === 'settings') {
-      this.syncPreferencesUI();
-    }
-
-    // Stop speaking if leaving content view
-    if (viewName !== 'content' && this.isSpeaking) {
-      this.stopTTS();
-    }
-
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }
-
-  updateHeader(viewName) {
-    const backBtn = document.getElementById('back-btn');
-    const headerTitle = document.getElementById('header-title');
-    const headerSubtitle = document.getElementById('header-subtitle');
-
+    // View-specific loader
     switch (viewName) {
       case 'dashboard':
-        backBtn.classList.add('hidden');
-        headerTitle.textContent = 'Study Buddy';
-        headerSubtitle.textContent = 'Your AI Study Companion';
+        this.updateDashboard();
         break;
-      case 'course':
-        backBtn.classList.remove('hidden');
-        headerTitle.textContent = cleanBrackets(this.data.currentCourse?.name || 'Course');
-        headerSubtitle.textContent = cleanBrackets(this.data.currentCourse?.code || '');
+      case 'courses':
+        this.loadCourses();
         break;
-      case 'topic':
-        backBtn.classList.remove('hidden');
-        headerTitle.textContent = cleanBrackets(this.data.currentTopic?.name || 'Topic');
-        headerSubtitle.textContent = cleanBrackets(this.data.currentCourse?.name || '');
+      case 'course-detail':
+        this.loadCourseDetail(data);
+        break;
+      case 'topic-detail':
+        this.loadTopicDetail(data);
         break;
       case 'content':
-        backBtn.classList.remove('hidden');
-        headerTitle.textContent = this.getContentTypeTitle(this.data.currentContent?.type);
-        headerSubtitle.textContent = cleanBrackets(this.data.currentTopic?.name || '');
+        this.loadContentView(data);
         break;
       case 'quiz':
-        backBtn.classList.remove('hidden');
-        headerTitle.textContent = 'Topic Quiz';
-        headerSubtitle.textContent = cleanBrackets(this.data.currentTopic?.name || '');
+        this.loadQuizView(data);
         break;
-      case 'flashcards':
-        backBtn.classList.remove('hidden');
-        headerTitle.textContent = 'Flashcards';
-        headerSubtitle.textContent = cleanBrackets(this.data.currentTopic?.name || '');
+      case 'study':
+        this.loadStudyView();
+        break;
+      case 'pomodoro':
+        this.updatePomodoroDisplay();
         break;
       case 'settings':
-        backBtn.classList.remove('hidden');
-        headerTitle.textContent = 'Settings';
-        headerSubtitle.textContent = 'Preferences & API';
+        this.syncPreferencesUI();
         break;
-      case 'prompts':
-        backBtn.classList.remove('hidden');
-        headerTitle.textContent = 'Prompts Library';
-        headerSubtitle.textContent = 'Copy study prompts';
-        break;
-      default:
-        backBtn.classList.add('hidden');
-        headerTitle.textContent = 'Study Buddy';
-        headerSubtitle.textContent = '';
     }
   }
 
-  updateNav(viewName) {
-    document.querySelectorAll('.nav-btn').forEach(btn => {
-      const targetView = btn.dataset.view;
-      const isActive = (targetView === viewName) ||
-        (targetView === 'dashboard' && ['course', 'topic', 'content', 'quiz', 'flashcards'].includes(viewName));
-
-      if (isActive) {
-        btn.classList.add('active', 'text-primary-600', 'dark:text-primary-400');
-        btn.classList.remove('text-gray-500', 'dark:text-gray-400');
-      } else {
-        btn.classList.remove('active', 'text-primary-600', 'dark:text-primary-400');
-        btn.classList.add('text-gray-500', 'dark:text-gray-400');
-      }
-    });
-  }
-
-  handleBackNavigation() {
-    switch (this.data.currentView) {
-      case 'course':
-        this.showView('dashboard');
-        break;
-      case 'topic':
-        this.showView('course');
-        break;
-      case 'content':
-      case 'quiz':
-      case 'flashcards':
-        this.showView('topic');
-        break;
-      case 'settings':
-      case 'prompts':
-        this.showView('dashboard');
-        break;
-      default:
-        this.showView('dashboard');
-    }
-  }
-
-  // --- Pomodoro Timer ---
-  initPomodoroUI() {
-    this.updatePomodoroDisplay();
-  }
-
-  setPomodoroMode(mode) {
-    if (this.pomodoro.running) this.pausePomodoro();
-    this.pomodoro.mode = mode;
-
-    if (mode === 'work') {
-      this.pomodoro.initialTime = 25 * 60;
-    } else if (mode === 'shortBreak') {
-      this.pomodoro.initialTime = 5 * 60;
-    } else if (mode === 'longBreak') {
-      this.pomodoro.initialTime = 15 * 60;
-    }
-    this.pomodoro.timeLeft = this.pomodoro.initialTime;
-
-    ['work', 'shortBreak', 'longBreak'].forEach(m => {
-      const btn = document.getElementById(`pomo-mode-${m}`);
-      if (!btn) return;
-      if (m === mode) {
-        btn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-gray-800 text-primary-600 dark:text-primary-400 shadow-sm transition-all';
-      } else {
-        btn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-all';
-      }
-    });
-
-    this.updatePomodoroDisplay();
-  }
-
-  togglePomodoro() {
-    if (this.pomodoro.running) {
-      this.pausePomodoro();
+  goBack() {
+    const view = this.data.currentView;
+    if (view === 'content' || view === 'quiz') {
+      this.showView('topic-detail', { topicId: this.data.currentTopic?.id });
+    } else if (view === 'topic-detail') {
+      this.showView('course-detail', { courseId: this.data.currentCourse?.id });
+    } else if (view === 'course-detail') {
+      this.showView('courses');
     } else {
-      this.startPomodoro();
-    }
-  }
-
-  startPomodoro() {
-    if (this.pomodoro.running) return;
-    this.pomodoro.running = true;
-    const btn = document.getElementById('pomo-toggle-btn');
-    if (btn) btn.innerHTML = `<span>⏸</span><span>Pause</span>`;
-
-    this.pomodoro.intervalId = setInterval(() => {
-      this.pomodoro.timeLeft--;
-      this.updatePomodoroDisplay();
-
-      if (this.pomodoro.timeLeft <= 0) {
-        this.completePomodoroSession();
-      }
-    }, 1000);
-  }
-
-  pausePomodoro() {
-    this.pomodoro.running = false;
-    clearInterval(this.pomodoro.intervalId);
-    const btn = document.getElementById('pomo-toggle-btn');
-    if (btn) btn.innerHTML = `<span>▶</span><span>Start</span>`;
-  }
-
-  resetPomodoro() {
-    this.pausePomodoro();
-    this.pomodoro.timeLeft = this.pomodoro.initialTime;
-    this.updatePomodoroDisplay();
-  }
-
-  completePomodoroSession() {
-    this.pausePomodoro();
-    this.playAudioChime('alert');
-
-    if (this.pomodoro.mode === 'work') {
-      this.pomodoro.sessionsCompleted++;
-      this.recordActivity();
-      this.showToast('Work session completed! Take a break 🎉', 'success');
-      const countEl = document.getElementById('pomo-session-count');
-      if (countEl) countEl.textContent = this.pomodoro.sessionsCompleted;
-
-      if (this.pomodoro.sessionsCompleted % 4 === 0) {
-        this.setPomodoroMode('longBreak');
-      } else {
-        this.setPomodoroMode('shortBreak');
-      }
-    } else {
-      this.showToast('Break finished! Ready to focus?', 'info');
-      this.setPomodoroMode('work');
-    }
-  }
-
-  updatePomodoroDisplay() {
-    const min = Math.floor(this.pomodoro.timeLeft / 60);
-    const sec = this.pomodoro.timeLeft % 60;
-    const display = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
-
-    const timerEl = document.getElementById('pomo-timer-display');
-    if (timerEl) timerEl.textContent = display;
-
-    const ring = document.getElementById('pomo-progress-ring');
-    if (ring) {
-      const circumference = 2 * Math.PI * 44; // r=44 => ~276.46
-      const fraction = 1 - (this.pomodoro.timeLeft / this.pomodoro.initialTime);
-      ring.style.strokeDashoffset = circumference * fraction;
-    }
-  }
-
-  // --- Text to Speech (TTS) ---
-  toggleTTS() {
-    if (this.isSpeaking) {
-      this.stopTTS();
-    } else {
-      this.startTTS();
-    }
-  }
-
-  startTTS() {
-    if (!('speechSynthesis' in window)) {
-      this.showToast('Speech synthesis not supported by this browser', 'error');
-      return;
-    }
-
-    const contentEl = document.getElementById('content-display');
-    if (!contentEl) return;
-    const text = contentEl.innerText || contentEl.textContent;
-    if (!text || !text.trim()) {
-      this.showToast('No readable text found', 'error');
-      return;
-    }
-
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-
-    utterance.onstart = () => {
-      this.isSpeaking = true;
-      const ttsBtn = document.getElementById('content-tts-btn');
-      if (ttsBtn) {
-        ttsBtn.classList.add('bg-primary-500', 'text-white');
-        ttsBtn.classList.remove('bg-gray-100', 'dark:bg-gray-800', 'text-gray-700', 'dark:text-gray-300');
-        ttsBtn.title = 'Stop reading aloud';
-      }
-    };
-
-    utterance.onend = utterance.onerror = () => {
-      this.stopTTS();
-    };
-
-    window.speechSynthesis.speak(utterance);
-  }
-
-  stopTTS() {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
-    this.isSpeaking = false;
-    const ttsBtn = document.getElementById('content-tts-btn');
-    if (ttsBtn) {
-      ttsBtn.classList.remove('bg-primary-500', 'text-white');
-      ttsBtn.classList.add('bg-gray-100', 'dark:bg-gray-800', 'text-gray-700', 'dark:text-gray-300');
-      ttsBtn.title = 'Read aloud (TTS)';
-    }
-  }
-
-  // --- Preferences & Settings ---
-  syncPreferencesUI() {
-    const pp = this.data.settings.personalization || {};
-    const el = (id) => document.getElementById(id);
-
-    const depthEl = el('pref-depth');
-    const exEl = el('pref-examples');
-    const rigEl = el('pref-rigor');
-    const readEl = el('pref-read-time');
-    const diffEl = el('pref-difficulty');
-    const citEl = el('pref-citation');
-    const fcEl = el('pref-flashcards-count');
-    const apiEl = el('pref-gemini-key');
-
-    if (depthEl) depthEl.value = pp.depth || 'standard';
-    if (exEl) exEl.value = pp.examples || 'medium';
-    if (rigEl) rigEl.value = pp.rigor || 'light';
-    if (readEl) readEl.value = pp.readTime ?? 10;
-    if (diffEl) diffEl.value = pp.difficulty || 'Intermediate';
-    if (citEl) citEl.value = pp.citation || 'minimal';
-    if (fcEl) fcEl.value = pp.flashcardsCount ?? 15;
-    if (apiEl) apiEl.value = this.data.settings.geminiApiKey || '';
-
-    const darkToggle = el('dark-mode-toggle');
-    if (darkToggle) darkToggle.checked = !!this.data.settings.darkMode;
-  }
-
-  savePreferencesFromUI() {
-    const el = (id) => document.getElementById(id);
-
-    const apiKeyVal = el('pref-gemini-key')?.value?.trim() || '';
-    this.data.settings.geminiApiKey = apiKeyVal;
-
-    this.data.settings.personalization = {
-      depth: el('pref-depth')?.value || 'standard',
-      examples: el('pref-examples')?.value || 'medium',
-      rigor: el('pref-rigor')?.value || 'light',
-      readTime: parseInt(el('pref-read-time')?.value || '10', 10),
-      difficulty: el('pref-difficulty')?.value || 'Intermediate',
-      citation: el('pref-citation')?.value || 'minimal',
-      flashcardsCount: parseInt(el('pref-flashcards-count')?.value || '15', 10)
-    };
-
-    this.saveData(true);
-    this.showToast('Preferences saved!');
-  }
-
-  resetPreferences() {
-    this.data.settings.personalization = {
-      depth: 'standard',
-      examples: 'medium',
-      rigor: 'light',
-      readTime: 10,
-      difficulty: 'Intermediate',
-      citation: 'minimal',
-      flashcardsCount: 15
-    };
-    this.syncPreferencesUI();
-    this.saveData(true);
-    this.showToast('Preferences reset to default');
-  }
-
-  // --- Gemini 1-Click Generation ---
-  async callGeminiApi(promptText) {
-    const apiKey = this.data.settings.geminiApiKey?.trim();
-    if (!apiKey) {
-      throw new Error('NO_API_KEY');
-    }
-
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
-    const payload = {
-      contents: [{
-        parts: [{ text: promptText }]
-      }],
-      generationConfig: {
-        temperature: 0.2,
-        responseMimeType: "application/json"
-      }
-    };
-
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => ({}));
-      throw new Error(errJson.error?.message || `HTTP ${res.status}`);
-    }
-
-    const data = await res.json();
-    const candidate = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!candidate) throw new Error('No content returned from Gemini');
-    return candidate;
-  }
-
-  async runAiGenerateCurrentTopic(type) {
-    const apiKey = this.data.settings.geminiApiKey?.trim();
-    if (!apiKey) {
-      this.showToast('Add your Gemini API key in Settings first!', 'error');
-      this.showView('settings');
-      return;
-    }
-
-    const topic = this.data.currentTopic;
-    if (!topic) {
-      this.showToast('Select a topic first', 'error');
-      return;
-    }
-
-    this.showLoading('Generating with Gemini AI...');
-    try {
-      const prompt = this.getContentPrompt(type, topic);
-      const rawRes = await this.callGeminiApi(prompt);
-      const parsed = extractJsonFromText(rawRes);
-
-      if (!parsed) {
-        throw new Error('Could not parse JSON response from Gemini');
-      }
-
-      this.saveContentFromPaste(type, parsed);
-      this.hideLoading();
-      this.showToast(`${this.getContentTypeTitle(type)} generated!`, 'success');
-
-      if (type === 'quiz') {
-        this.startQuiz();
-      } else if (type === 'flashcards') {
-        this.startFlashcards();
-      } else {
-        this.viewContent(type);
-      }
-    } catch (err) {
-      this.hideLoading();
-      if (err.message === 'NO_API_KEY') {
-        this.showToast('API key missing. Open Settings to set it.', 'error');
-      } else {
-        this.showToast(`AI generation failed: ${err.message}`, 'error');
-      }
-    }
-  }
-
-  // --- Prompts View ---
-  updatePromptsView() {
-    const list = document.getElementById('prompts-list');
-    if (!list) return;
-
-    const topic = this.data.currentTopic || { name: 'Cellular Respiration', id: 'sample_topic', difficulty: 'Intermediate' };
-
-    const promptItems = [
-      {
-        id: 'structure',
-        title: 'Course Structure Prompt',
-        desc: 'Extract units, topics, and difficulty from course outline/syllabus',
-        prompt: this.getStructurePrompt()
-      },
-      {
-        id: 'core',
-        title: 'Core Concepts Prompt',
-        desc: `Generate in-depth explanations & breakdowns for "${escapeHtml(topic.name)}"`,
-        prompt: this.getContentPrompt('core', topic)
-      },
-      {
-        id: 'examples',
-        title: 'Real-world Examples Prompt',
-        desc: `Generate practical applications & case studies for "${escapeHtml(topic.name)}"`,
-        prompt: this.getContentPrompt('examples', topic)
-      },
-      {
-        id: 'quiz',
-        title: 'Quiz Generator Prompt',
-        desc: `Create 10 multi-format MCQs & challenge questions for "${escapeHtml(topic.name)}"`,
-        prompt: this.getContentPrompt('quiz', topic)
-      },
-      {
-        id: 'flashcards',
-        title: 'Flashcards Prompt',
-        desc: `Create interactive Leitner SRS flashcards for "${escapeHtml(topic.name)}"`,
-        prompt: this.getContentPrompt('flashcards', topic)
-      },
-      {
-        id: 'cheatsheet',
-        title: 'Quick Cheatsheet Prompt',
-        desc: `Create a high-yield summary table & mnemonics for "${escapeHtml(topic.name)}"`,
-        prompt: this.getContentPrompt('cheatsheet', topic)
-      }
-    ];
-
-    list.innerHTML = promptItems.map(p => `
-      <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm space-y-3">
-        <div class="flex items-start justify-between">
-          <div>
-            <h4 class="font-bold text-gray-900 dark:text-gray-100 text-sm">${p.title}</h4>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">${p.desc}</p>
-          </div>
-          <button onclick="copyPrompt('${p.id}')"
-            class="px-3 py-1.5 bg-primary-50 hover:bg-primary-100 dark:bg-primary-950/60 dark:hover:bg-primary-900/60 text-primary-600 dark:text-primary-400 rounded-lg text-xs font-semibold flex items-center space-x-1 transition-colors">
-            <span>📋</span><span>Copy</span>
-          </button>
-        </div>
-        <div class="bg-gray-50 dark:bg-gray-900/80 p-3 rounded-xl border border-gray-100 dark:border-gray-800 max-h-36 overflow-y-auto font-mono text-[11px] text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
-${escapeHtml(p.prompt.slice(0, 300))}...
-        </div>
-      </div>
-    `).join('');
-  }
-
-  // --- Prompts Generation Logic ---
-  getStructurePrompt() {
-    return `Generate a comprehensive study structure for the following course material. Return strictly valid JSON inside a \`\`\`json\`\`\` code fence.
-
-SCHEMA REQUIREMENTS:
-{
-  "courseName": "string",
-  "courseCode": "string (optional)",
-  "description": "string",
-  "topics": [
-    {
-      "id": "topic_1",
-      "name": "string",
-      "description": "string",
-      "estimatedHours": number,
-      "difficulty": "Beginner" | "Intermediate" | "Advanced"
-    }
-  ]
-}
-
-Ensure topics follow a logical pedagogical progression. Do not include extra text outside the JSON code block.`;
-  }
-
-  getContentPrompt(type, topic) {
-    const pp = this.data.settings.personalization || {};
-    const depth = pp.depth || 'standard';
-    const examples = pp.examples || 'medium';
-    const rigor = pp.rigor || 'light';
-    const readTime = pp.readTime ?? 10;
-    const diff = topic.difficulty || pp.difficulty || 'Intermediate';
-    const fcCount = pp.flashcardsCount ?? 15;
-
-    const basePrompt = `You are a high-level academic tutor. Generate study content for:
-Topic: "${topic.name}"
-Target Difficulty: ${diff}
-Depth Level: ${depth}
-Target Read Time: ${readTime} minutes
-Example Density: ${examples}
-Mathematical/Conceptual Rigor: ${rigor}
-
-Return ONLY valid JSON matching the exact schema inside a \`\`\`json\`\`\` block.`;
-
-    switch (type) {
-      case 'core':
-        return `${basePrompt}
-
-SCHEMA:
-{
-  "topicId": "${topic.id}",
-  "type": "core",
-  "title": "${topic.name}: Core Concepts",
-  "readTimeMinutes": ${readTime},
-  "sections": [
-    {
-      "heading": "string",
-      "content": "Detailed markdown explanation with bold key terms",
-      "keyTakeaways": ["string", "string"]
-    }
-  ],
-  "commonMisconceptions": [
-    {
-      "misconception": "string",
-      "reality": "string"
-    }
-  ]
-}`;
-
-      case 'examples':
-        return `${basePrompt}
-
-SCHEMA:
-{
-  "topicId": "${topic.id}",
-  "type": "examples",
-  "title": "${topic.name}: Real-World Examples & Applications",
-  "examples": [
-    {
-      "title": "string",
-      "scenario": "string",
-      "walkthrough": "Step-by-step breakdown",
-      "takeaway": "string"
-    }
-  ]
-}`;
-
-      case 'quiz':
-        return `${basePrompt}
-
-SCHEMA:
-{
-  "topicId": "${topic.id}",
-  "type": "quiz",
-  "title": "${topic.name} Mastery Quiz",
-  "questions": [
-    {
-      "id": "q1",
-      "question": "string",
-      "options": ["Option A", "Option B", "Option C", "Option D"],
-      "correctIndex": 0,
-      "explanation": "Detailed explanation of why this answer is correct and others are wrong"
-    }
-  ]
-}
-Generate 5 to 10 high-quality conceptual and application questions.`;
-
-      case 'flashcards':
-        return `${basePrompt}
-
-SCHEMA:
-{
-  "topicId": "${topic.id}",
-  "type": "flashcards",
-  "title": "${topic.name} Key Flashcards",
-  "cards": [
-    {
-      "id": "card_1",
-      "front": "Question or prompt",
-      "back": "Concise, precise answer",
-      "hint": "Optional hint string"
-    }
-  ]
-}
-Generate exactly ${fcCount} cards.`;
-
-      case 'cheatsheet':
-        return `${basePrompt}
-
-SCHEMA:
-{
-  "topicId": "${topic.id}",
-  "type": "cheatsheet",
-  "title": "${topic.name} Quick Cheatsheet",
-  "keyFormulasOrDefinitions": [
-    { "term": "string", "definition": "string" }
-  ],
-  "summaryTable": {
-    "headers": ["Concept", "Key Rule", "Application"],
-    "rows": [
-      ["Row 1 Col 1", "Row 1 Col 2", "Row 1 Col 3"]
-    ]
-  },
-  "mnemonics": ["string"]
-}`;
-
-      default:
-        return basePrompt;
-    }
-  }
-
-  // --- Dashboard Rendering ---
-  updateDashboard() {
-    this.renderStats();
-    this.renderCourseList();
-  }
-
-  renderStats() {
-    const totalCourses = this.data.courses.length;
-    let totalTopics = 0;
-    let completedTopics = 0;
-    let totalStudyMinutes = 0;
-
-    for (const course of this.data.courses) {
-      for (const topic of course.topics || []) {
-        totalTopics++;
-        const slots = Object.values(topic.contentSlots || {});
-        const hasCompletedSlot = slots.some(s => s && s.completed);
-        if (hasCompletedSlot) completedTopics++;
-
-        slots.forEach(slot => {
-          if (slot && slot.completed) {
-            totalStudyMinutes += slot.readTimeMinutes || 10;
-          }
-        });
-      }
-    }
-
-    const streakEl = document.getElementById('stat-streak');
-    if (streakEl) streakEl.textContent = this.data.stats.streak || 1;
-
-    const coursesEl = document.getElementById('stat-courses');
-    if (coursesEl) coursesEl.textContent = totalCourses;
-
-    const topicsEl = document.getElementById('stat-completed-topics');
-    if (topicsEl) topicsEl.textContent = `${completedTopics}/${totalTopics}`;
-
-    const hoursEl = document.getElementById('stat-hours');
-    if (hoursEl) hoursEl.textContent = (totalStudyMinutes / 60).toFixed(1);
-
-    const overallPct = totalTopics > 0 ? Math.round((completedTopics / totalTopics) * 100) : 0;
-    const progressEl = document.getElementById('overall-progress-bar');
-    if (progressEl) progressEl.style.width = `${overallPct}%`;
-
-    const progressPctText = document.getElementById('overall-progress-pct');
-    if (progressPctText) progressPctText.textContent = `${overallPct}%`;
-  }
-
-  renderCourseList() {
-    const container = document.getElementById('courses-list');
-    const emptyState = document.getElementById('empty-courses-state');
-    if (!container) return;
-
-    if (!this.data.courses.length) {
-      container.innerHTML = '';
-      if (emptyState) emptyState.classList.remove('hidden');
-      return;
-    }
-
-    if (emptyState) emptyState.classList.add('hidden');
-
-    const searchInput = document.getElementById('course-search-input');
-    const query = (searchInput?.value || '').toLowerCase().trim();
-
-    const filtered = this.data.courses.filter(c =>
-      c.name.toLowerCase().includes(query) ||
-      (c.code && c.code.toLowerCase().includes(query))
-    );
-
-    if (!filtered.length) {
-      container.innerHTML = `
-        <div class="text-center py-8 text-gray-500 dark:text-gray-400 text-sm">
-          No courses matching "${escapeHtml(query)}"
-        </div>
-      `;
-      return;
-    }
-
-    container.innerHTML = filtered.map(course => {
-      const topics = course.topics || [];
-      const completedCount = topics.filter(t => {
-        const slots = Object.values(t.contentSlots || {});
-        return slots.some(s => s && s.completed);
-      }).length;
-      const pct = topics.length ? Math.round((completedCount / topics.length) * 100) : 0;
-
-      return `
-        <div onclick="window.app.openCourse('${course.id}')"
-          class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-md hover:border-primary-300 dark:hover:border-primary-600 transition-all cursor-pointer flex flex-col justify-between">
-          <div class="flex items-start justify-between">
-            <div class="space-y-1">
-              <div class="flex items-center space-x-2">
-                ${course.code ? `<span class="px-2 py-0.5 bg-primary-100 dark:bg-primary-900/60 text-primary-700 dark:text-primary-300 text-xs font-semibold rounded-md">${escapeHtml(cleanBrackets(course.code))}</span>` : ''}
-                <span class="text-xs text-gray-500 dark:text-gray-400 font-medium">${topics.length} topics</span>
-              </div>
-              <h3 class="font-bold text-gray-900 dark:text-gray-100 text-base leading-snug">${escapeHtml(cleanBrackets(course.name))}</h3>
-              ${course.description ? `<p class="text-xs text-gray-500 dark:text-gray-400 line-clamp-2">${escapeHtml(cleanBrackets(course.description))}</p>` : ''}
-            </div>
-            <button onclick="event.stopPropagation(); window.app.deleteCourse('${course.id}')"
-              class="p-1.5 text-gray-400 hover:text-red-500 dark:hover:text-red-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Delete Course">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-            </button>
-          </div>
-
-          <div class="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700/60">
-            <div class="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 mb-1.5">
-              <span>Progress</span>
-              <span class="font-semibold text-primary-600 dark:text-primary-400">${pct}%</span>
-            </div>
-            <div class="w-full bg-gray-100 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
-              <div class="bg-primary-500 h-2 rounded-full transition-all duration-300" style="width: ${pct}%"></div>
-            </div>
-          </div>
-        </div>
-      `;
-    }).join('');
-  }
-
-  // --- Course View ---
-  openCourse(courseId) {
-    const course = this.data.courses.find(c => c.id === courseId);
-    if (!course) return;
-
-    this.data.currentCourse = course;
-    this.renderCourseView();
-    this.showView('course');
-  }
-
-  renderCourseView() {
-    const course = this.data.currentCourse;
-    if (!course) return;
-
-    const nameEl = document.getElementById('course-detail-name');
-    const descEl = document.getElementById('course-detail-desc');
-    const topicsList = document.getElementById('course-topics-list');
-
-    if (nameEl) nameEl.textContent = cleanBrackets(course.name);
-    if (descEl) descEl.textContent = cleanBrackets(course.description || 'No description provided.');
-
-    const topics = course.topics || [];
-    if (!topics.length) {
-      topicsList.innerHTML = `
-        <div class="text-center py-12 bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-6">
-          <p class="text-gray-500 dark:text-gray-400 text-sm mb-4">No topics in this course yet.</p>
-          <button onclick="window.app.openPasteModal('structure')"
-            class="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white font-medium text-xs rounded-xl shadow transition-all">
-            Import Topics Outline
-          </button>
-        </div>
-      `;
-      return;
-    }
-
-    topicsList.innerHTML = topics.map((topic, index) => {
-      const slots = topic.contentSlots || {};
-      const completedCount = Object.values(slots).filter(s => s && s.completed).length;
-      const totalSlots = 5; // core, examples, quiz, flashcards, cheatsheet
-      const pct = Math.round((completedCount / totalSlots) * 100);
-
-      const diffBadge = topic.difficulty ? `
-        <span class="px-2 py-0.5 rounded text-[10px] font-semibold ${
-          topic.difficulty === 'Beginner' ? 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300' :
-          topic.difficulty === 'Advanced' ? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300' :
-          'bg-yellow-100 text-yellow-700 dark:bg-yellow-950 dark:text-yellow-300'
-        }">${escapeHtml(topic.difficulty)}</span>` : '';
-
-      return `
-        <div onclick="window.app.openTopic('${topic.id}')"
-          class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 hover:border-primary-400 dark:hover:border-primary-500 shadow-sm transition-all cursor-pointer space-y-3">
-          <div class="flex items-start justify-between">
-            <div class="space-y-1 flex-1 pr-2">
-              <div class="flex items-center space-x-2">
-                <span class="text-xs font-bold text-gray-400">#${index + 1}</span>
-                ${diffBadge}
-              </div>
-              <h4 class="font-bold text-gray-900 dark:text-gray-100 text-sm leading-snug">${escapeHtml(cleanBrackets(topic.name))}</h4>
-              ${topic.description ? `<p class="text-xs text-gray-500 dark:text-gray-400 line-clamp-1">${escapeHtml(cleanBrackets(topic.description))}</p>` : ''}
-            </div>
-            <div class="text-right flex flex-col items-end">
-              <span class="text-xs font-semibold text-primary-600 dark:text-primary-400">${completedCount}/${totalSlots}</span>
-              <span class="text-[10px] text-gray-400">slots</span>
-            </div>
-          </div>
-
-          <div class="flex items-center space-x-1.5 pt-1">
-            ${['core', 'examples', 'quiz', 'flashcards', 'cheatsheet'].map(type => {
-              const hasContent = !!slots[type];
-              const isComp = !!slots[type]?.completed;
-              return `
-                <div title="${this.getContentTypeTitle(type)}: ${isComp ? 'Completed' : (hasContent ? 'In Progress' : 'Empty')}"
-                  class="flex-1 h-1.5 rounded-full ${
-                    isComp ? 'bg-green-500' : (hasContent ? 'bg-primary-400' : 'bg-gray-200 dark:bg-gray-700')
-                  }"></div>
-              `;
-            }).join('')}
-          </div>
-        </div>
-      `;
-    }).join('');
-  }
-
-  // --- Topic View ---
-  openTopic(topicId) {
-    const course = this.data.currentCourse;
-    if (!course) return;
-
-    const topic = (course.topics || []).find(t => t.id === topicId);
-    if (!topic) return;
-
-    this.data.currentTopic = topic;
-    this.renderTopicView();
-    this.showView('topic');
-  }
-
-  renderTopicView() {
-    const topic = this.data.currentTopic;
-    if (!topic) return;
-
-    const titleEl = document.getElementById('topic-detail-title');
-    const descEl = document.getElementById('topic-detail-desc');
-    const diffEl = document.getElementById('topic-detail-diff');
-
-    if (titleEl) titleEl.textContent = cleanBrackets(topic.name);
-    if (descEl) descEl.textContent = cleanBrackets(topic.description || 'Master this topic across all 5 learning modules.');
-    if (diffEl) {
-      diffEl.textContent = topic.difficulty || 'Intermediate';
-      diffEl.className = `px-2 py-0.5 rounded text-xs font-semibold ${
-        topic.difficulty === 'Beginner' ? 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300' :
-        topic.difficulty === 'Advanced' ? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300' :
-        'bg-yellow-100 text-yellow-700 dark:bg-yellow-950 dark:text-yellow-300'
-      }`;
-    }
-
-    const slots = topic.contentSlots || {};
-    const slotTypes = [
-      { key: 'core', name: 'Core Concepts', icon: '📖', desc: 'In-depth conceptual guide & takeaways' },
-      { key: 'examples', name: 'Real-World Examples', icon: '🌍', desc: 'Case studies, applications & walkthroughs' },
-      { key: 'quiz', name: 'Mastery Quiz', icon: '❓', desc: 'Practice test & score evaluation' },
-      { key: 'flashcards', name: 'Flashcards', icon: '🗂️', desc: 'Spaced repetition Leitner flashcards' },
-      { key: 'cheatsheet', name: 'Cheatsheet & Summary', icon: '⚡', desc: 'High-yield table & mnemonics' }
-    ];
-
-    const container = document.getElementById('topic-slots-list');
-    if (!container) return;
-
-    container.innerHTML = slotTypes.map(s => {
-      const data = slots[s.key];
-      const hasData = !!data;
-      const isCompleted = !!data?.completed;
-
-      let scoreBadge = '';
-      if (s.key === 'quiz' && data?.bestScore !== undefined && data.bestScore > 0) {
-        scoreBadge = `<span class="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 rounded text-xs font-bold">Best: ${data.bestScore}%</span>`;
-      }
-
-      return `
-        <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm flex items-center justify-between transition-all">
-          <div class="flex items-center space-x-3.5 flex-1 pr-2">
-            <div class="w-10 h-10 rounded-xl flex items-center justify-center text-lg ${
-              isCompleted ? 'bg-green-100 dark:bg-green-950 text-green-600 dark:text-green-400' :
-              (hasData ? 'bg-primary-100 dark:bg-primary-950 text-primary-600 dark:text-primary-400' : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400')
-            }">
-              ${isCompleted ? '✓' : s.icon}
-            </div>
-            <div class="space-y-0.5">
-              <div class="flex items-center space-x-2">
-                <h4 class="font-bold text-gray-900 dark:text-gray-100 text-sm">${s.name}</h4>
-                ${scoreBadge}
-              </div>
-              <p class="text-xs text-gray-500 dark:text-gray-400">${s.desc}</p>
-            </div>
-          </div>
-
-          <div class="flex items-center space-x-2">
-            ${hasData ? `
-              <button onclick="window.app.launchSlot('${s.key}')"
-                class="px-3.5 py-1.5 bg-primary-600 hover:bg-primary-700 text-white rounded-xl text-xs font-semibold shadow-sm transition-colors">
-                ${s.key === 'quiz' ? 'Take Quiz' : (s.key === 'flashcards' ? 'Practice' : 'Study')}
-              </button>
-            ` : `
-              <div class="flex items-center space-x-1.5">
-                <button onclick="window.app.openPasteModal('${s.key}')"
-                  class="px-2.5 py-1.5 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-xl text-xs font-medium transition-colors" title="Paste JSON">
-                  📥 Paste
-                </button>
-                <button onclick="window.app.runAiGenerateCurrentTopic('${s.key}')"
-                  class="px-2.5 py-1.5 bg-primary-50 dark:bg-primary-950/70 hover:bg-primary-100 text-primary-600 dark:text-primary-400 rounded-xl text-xs font-semibold border border-primary-200 dark:border-primary-800 transition-colors" title="Generate with Gemini">
-                  ✨ AI
-                </button>
-              </div>
-            `}
-          </div>
-        </div>
-      `;
-    }).join('');
-  }
-
-  launchSlot(type) {
-    if (type === 'quiz') {
-      this.startQuiz();
-    } else if (type === 'flashcards') {
-      this.startFlashcards();
-    } else {
-      this.viewContent(type);
-    }
-  }
-
-  // --- Content Viewer ---
-  viewContent(type) {
-    const topic = this.data.currentTopic;
-    if (!topic) return;
-
-    const content = topic.contentSlots?.[type];
-    if (!content) return;
-
-    this.data.currentContent = { type, data: content };
-    this.renderContentView();
-    this.showView('content');
-  }
-
-  renderContentView() {
-    const { type, data } = this.data.currentContent || {};
-    const container = document.getElementById('content-display');
-    const completeBtn = document.getElementById('complete-content-btn');
-
-    if (!container || !data) return;
-
-    let html = '';
-
-    if (type === 'core') {
-      html += `
-        <div class="space-y-6">
-          <div class="border-b border-gray-100 dark:border-gray-800 pb-3">
-            <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">${escapeHtml(cleanBrackets(data.title || 'Core Concepts'))}</h2>
-            ${data.readTimeMinutes ? `<span class="text-xs text-gray-500 dark:text-gray-400">⏱ ${data.readTimeMinutes} min read</span>` : ''}
-          </div>
-      `;
-
-      if (Array.isArray(data.sections)) {
-        html += data.sections.map(sec => `
-          <div class="space-y-3">
-            <h3 class="text-base font-bold text-primary-600 dark:text-primary-400">${escapeHtml(cleanBrackets(sec.heading))}</h3>
-            <div class="text-sm text-gray-700 dark:text-gray-300 leading-relaxed space-y-2">
-              ${this.renderMarkdown(sec.content)}
-            </div>
-            ${Array.isArray(sec.keyTakeaways) && sec.keyTakeaways.length ? `
-              <div class="bg-primary-50/60 dark:bg-primary-950/30 border-l-4 border-primary-500 p-3 rounded-r-xl">
-                <p class="text-xs font-bold text-primary-700 dark:text-primary-300 mb-1">Key Takeaways:</p>
-                <ul class="list-disc list-inside text-xs text-gray-700 dark:text-gray-300 space-y-1">
-                  ${sec.keyTakeaways.map(t => `<li>${escapeHtml(cleanBrackets(t))}</li>`).join('')}
-                </ul>
-              </div>
-            ` : ''}
-          </div>
-        `).join('');
-      }
-
-      if (Array.isArray(data.commonMisconceptions) && data.commonMisconceptions.length) {
-        html += `
-          <div class="mt-6 p-4 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 rounded-2xl space-y-3">
-            <h4 class="text-sm font-bold text-amber-800 dark:text-amber-300">⚠️ Common Misconceptions</h4>
-            <div class="space-y-2">
-              ${data.commonMisconceptions.map(m => `
-                <div class="text-xs space-y-0.5">
-                  <p class="font-semibold text-red-600 dark:text-red-400">❌ Myth: ${escapeHtml(cleanBrackets(m.misconception))}</p>
-                  <p class="text-gray-700 dark:text-gray-300">✅ Reality: ${escapeHtml(cleanBrackets(m.reality))}</p>
-                </div>
-              `).join('')}
-            </div>
-          </div>
-        `;
-      }
-
-      html += `</div>`;
-    } else if (type === 'examples') {
-      html += `
-        <div class="space-y-6">
-          <div class="border-b border-gray-100 dark:border-gray-800 pb-3">
-            <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">${escapeHtml(cleanBrackets(data.title || 'Real-World Examples'))}</h2>
-          </div>
-      `;
-
-      if (Array.isArray(data.examples)) {
-        html += data.examples.map((ex, i) => `
-          <div class="bg-gray-50 dark:bg-gray-800/80 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 space-y-3">
-            <div class="flex items-center space-x-2">
-              <span class="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-950 text-primary-600 dark:text-primary-400 text-xs font-bold flex items-center justify-center">${i + 1}</span>
-              <h3 class="font-bold text-sm text-gray-900 dark:text-gray-100">${escapeHtml(cleanBrackets(ex.title))}</h3>
-            </div>
-            ${ex.scenario ? `
-              <div class="text-xs text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-900 p-3 rounded-xl border border-gray-100 dark:border-gray-800">
-                <span class="font-semibold text-gray-800 dark:text-gray-200">Scenario:</span> ${escapeHtml(cleanBrackets(ex.scenario))}
-              </div>
-            ` : ''}
-            ${ex.walkthrough ? `
-              <div class="text-xs text-gray-700 dark:text-gray-300 leading-relaxed">
-                ${this.renderMarkdown(ex.walkthrough)}
-              </div>
-            ` : ''}
-            ${ex.takeaway ? `
-              <div class="text-xs font-semibold text-primary-600 dark:text-primary-400 bg-primary-50 dark:bg-primary-950/40 p-2.5 rounded-lg">
-                💡 Takeaway: ${escapeHtml(cleanBrackets(ex.takeaway))}
-              </div>
-            ` : ''}
-          </div>
-        `).join('');
-      }
-
-      html += `</div>`;
-    } else if (type === 'cheatsheet') {
-      html += `
-        <div class="space-y-6">
-          <div class="border-b border-gray-100 dark:border-gray-800 pb-3">
-            <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">${escapeHtml(cleanBrackets(data.title || 'Quick Cheatsheet'))}</h2>
-          </div>
-      `;
-
-      if (Array.isArray(data.keyFormulasOrDefinitions) && data.keyFormulasOrDefinitions.length) {
-        html += `
-          <div class="space-y-3">
-            <h3 class="text-sm font-bold text-primary-600 dark:text-primary-400">Key Terms & Definitions</h3>
-            <div class="grid grid-cols-1 gap-2">
-              ${data.keyFormulasOrDefinitions.map(item => `
-                <div class="bg-gray-50 dark:bg-gray-800/80 p-3 rounded-xl border border-gray-200 dark:border-gray-700">
-                  <span class="font-bold text-xs text-gray-900 dark:text-gray-100">${escapeHtml(cleanBrackets(item.term))}:</span>
-                  <span class="text-xs text-gray-600 dark:text-gray-300 ml-1">${escapeHtml(cleanBrackets(item.definition))}</span>
-                </div>
-              `).join('')}
-            </div>
-          </div>
-        `;
-      }
-
-      if (data.summaryTable && Array.isArray(data.summaryTable.headers) && Array.isArray(data.summaryTable.rows)) {
-        html += `
-          <div class="space-y-3">
-            <h3 class="text-sm font-bold text-primary-600 dark:text-primary-400">Summary Matrix</h3>
-            <div class="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700">
-              <table class="w-full text-left text-xs">
-                <thead class="bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 font-semibold">
-                  <tr>
-                    ${data.summaryTable.headers.map(h => `<th class="p-2.5">${escapeHtml(cleanBrackets(h))}</th>`).join('')}
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
-                  ${data.summaryTable.rows.map(row => `
-                    <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                      ${row.map(c => `<td class="p-2.5 text-gray-700 dark:text-gray-300">${escapeHtml(cleanBrackets(c))}</td>`).join('')}
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        `;
-      }
-
-      if (Array.isArray(data.mnemonics) && data.mnemonics.length) {
-        html += `
-          <div class="p-4 bg-purple-50 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800 rounded-2xl space-y-2">
-            <h4 class="text-xs font-bold text-purple-800 dark:text-purple-300">🧠 Memory Tricks & Mnemonics</h4>
-            <ul class="list-disc list-inside text-xs text-gray-700 dark:text-gray-300 space-y-1">
-              ${data.mnemonics.map(m => `<li>${escapeHtml(cleanBrackets(m))}</li>`).join('')}
-            </ul>
-          </div>
-        `;
-      }
-
-      html += `</div>`;
-    }
-
-    container.innerHTML = html;
-
-    if (completeBtn) {
-      if (data.completed) {
-        completeBtn.textContent = 'Completed ✓';
-        completeBtn.className = 'w-full py-3 bg-green-600 text-white rounded-xl font-semibold text-sm shadow transition-all cursor-default';
-      } else {
-        completeBtn.textContent = 'Mark Module as Completed';
-        completeBtn.className = 'w-full py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-semibold text-sm shadow-md transition-all';
-      }
-    }
-  }
-
-  renderMarkdown(text) {
-    if (!text) return '';
-    return escapeHtml(text)
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.*?)\*/g, '<em>$1</em>')
-      .replace(/`([^`]+)`/g, '<code class="bg-gray-200 dark:bg-gray-700 px-1 py-0.5 rounded text-xs font-mono">$1</code>')
-      .replace(/\n\n/g, '<br/><br/>')
-      .replace(/\n/g, '<br/>');
-  }
-
-  markCurrentContentComplete() {
-    if (!this.data.currentContent || !this.data.currentTopic) return;
-    const { type, data } = this.data.currentContent;
-
-    data.completed = true;
-    this.recordActivity();
-    this.playAudioChime('complete');
-    this.saveData(false);
-    this.showToast('Module completed! Keep going 🚀', 'success');
-    this.renderContentView();
-  }
-
-  // --- Quiz System ---
-  startQuiz() {
-    const topic = this.data.currentTopic;
-    if (!topic || !topic.contentSlots?.quiz) return;
-
-    const quizData = topic.contentSlots.quiz;
-    const questions = quizData.questions || [];
-
-    if (!questions.length) {
-      this.showToast('Quiz contains no questions', 'error');
-      return;
-    }
-
-    this.currentQuiz = {
-      questions,
-      currentIndex: 0,
-      userAnswers: new Array(questions.length).fill(null),
-      submitted: false,
-      score: 0
-    };
-
-    this.showView('quiz');
-    this.renderQuizQuestion();
-  }
-
-  renderQuizQuestion() {
-    const qState = this.currentQuiz;
-    if (!qState) return;
-
-    const q = qState.questions[qState.currentIndex];
-    const container = document.getElementById('quiz-container');
-    const resultsContainer = document.getElementById('quiz-results');
-
-    if (!container) return;
-
-    if (resultsContainer) resultsContainer.classList.add('hidden');
-    container.classList.remove('hidden');
-
-    const total = qState.questions.length;
-    const currentNum = qState.currentIndex + 1;
-    const pct = Math.round((currentNum / total) * 100);
-
-    const progressEl = document.getElementById('quiz-progress-bar');
-    if (progressEl) progressEl.style.width = `${pct}%`;
-
-    const progressText = document.getElementById('quiz-question-number');
-    if (progressText) progressText.textContent = `Question ${currentNum} of ${total}`;
-
-    const selectedIdx = qState.userAnswers[qState.currentIndex];
-
-    let optionsHtml = '';
-    (q.options || []).forEach((opt, idx) => {
-      const isSelected = selectedIdx === idx;
-      optionsHtml += `
-        <button onclick="window.app.selectQuizAnswer(${idx})"
-          class="w-full text-left p-3.5 rounded-xl border text-sm font-medium transition-all ${
-            isSelected
-              ? 'border-primary-500 bg-primary-50 dark:bg-primary-950/60 text-primary-700 dark:text-primary-300 ring-2 ring-primary-500/30'
-              : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-750'
-          }">
-          <div class="flex items-center space-x-3">
-            <span class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
-              isSelected ? 'bg-primary-500 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-500'
-            }">${String.fromCharCode(65 + idx)}</span>
-            <span class="flex-1">${escapeHtml(cleanBrackets(opt))}</span>
-          </div>
-        </button>
-      `;
-    });
-
-    container.innerHTML = `
-      <div class="space-y-4">
-        <h3 class="text-base font-bold text-gray-900 dark:text-gray-100 leading-snug">${escapeHtml(cleanBrackets(q.question))}</h3>
-        <div class="space-y-2.5">
-          ${optionsHtml}
-        </div>
-      </div>
-    `;
-
-    const prevBtn = document.getElementById('quiz-prev-btn');
-    const nextBtn = document.getElementById('quiz-next-btn');
-
-    if (prevBtn) {
-      prevBtn.disabled = qState.currentIndex === 0;
-      prevBtn.className = `px-4 py-2 rounded-xl text-xs font-semibold ${
-        qState.currentIndex === 0 ? 'opacity-40 cursor-not-allowed bg-gray-200 dark:bg-gray-700 text-gray-500' : 'bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 text-gray-800 dark:text-gray-200'
-      }`;
-    }
-
-    if (nextBtn) {
-      const isLast = qState.currentIndex === total - 1;
-      nextBtn.textContent = isLast ? 'Submit Quiz' : 'Next Question';
-      nextBtn.onclick = () => isLast ? this.submitQuiz() : this.nextQuizQuestion();
-    }
-  }
-
-  selectQuizAnswer(idx) {
-    if (!this.currentQuiz) return;
-    this.currentQuiz.userAnswers[this.currentQuiz.currentIndex] = idx;
-    this.renderQuizQuestion();
-  }
-
-  prevQuizQuestion() {
-    if (!this.currentQuiz || this.currentQuiz.currentIndex === 0) return;
-    this.currentQuiz.currentIndex--;
-    this.renderQuizQuestion();
-  }
-
-  nextQuizQuestion() {
-    if (!this.currentQuiz) return;
-    const total = this.currentQuiz.questions.length;
-    if (this.currentQuiz.currentIndex < total - 1) {
-      this.currentQuiz.currentIndex++;
-      this.renderQuizQuestion();
-    }
-  }
-
-  submitQuiz() {
-    const qState = this.currentQuiz;
-    if (!qState) return;
-
-    let correctCount = 0;
-    qState.questions.forEach((q, idx) => {
-      if (qState.userAnswers[idx] === q.correctIndex) {
-        correctCount++;
-      }
-    });
-
-    const scorePct = Math.round((correctCount / qState.questions.length) * 100);
-    qState.score = scorePct;
-    qState.submitted = true;
-
-    // Record slot score
-    const slot = this.data.currentTopic?.contentSlots?.quiz;
-    if (slot) {
-      if (!Array.isArray(slot.attempts)) slot.attempts = [];
-      slot.attempts.push({ date: this._today(), score: scorePct });
-      slot.bestScore = Math.max(slot.bestScore || 0, scorePct);
-
-      if (scorePct >= this.quizMasteryThreshold) {
-        slot.completed = true;
-      }
-      this.saveData(false);
-    }
-
-    this.recordActivity();
-    if (scorePct >= this.quizMasteryThreshold) {
-      this.playAudioChime('complete');
-    }
-
-    this.renderQuizResults(scorePct, correctCount, qState.questions.length);
-  }
-
-  renderQuizResults(scorePct, correctCount, total) {
-    const container = document.getElementById('quiz-container');
-    const resultsContainer = document.getElementById('quiz-results');
-    const controls = document.getElementById('quiz-controls');
-
-    if (container) container.classList.add('hidden');
-    if (controls) controls.classList.add('hidden');
-    if (!resultsContainer) return;
-
-    resultsContainer.classList.remove('hidden');
-
-    const passed = scorePct >= this.quizMasteryThreshold;
-
-    let reviewHtml = '';
-    this.currentQuiz.questions.forEach((q, idx) => {
-      const userAns = this.currentQuiz.userAnswers[idx];
-      const isCorrect = userAns === q.correctIndex;
-
-      reviewHtml += `
-        <div class="p-3.5 rounded-xl border text-xs space-y-2 ${
-          isCorrect ? 'bg-green-50/50 dark:bg-green-950/20 border-green-200 dark:border-green-800/60' : 'bg-red-50/50 dark:bg-red-950/20 border-red-200 dark:border-red-800/60'
-        }">
-          <div class="flex items-start space-x-2">
-            <span>${isCorrect ? '✅' : '❌'}</span>
-            <div class="flex-1 space-y-1">
-              <p class="font-bold text-gray-900 dark:text-gray-100">${escapeHtml(cleanBrackets(q.question))}</p>
-              <p class="text-gray-600 dark:text-gray-400">Your answer: <span class="font-semibold ${isCorrect ? 'text-green-600' : 'text-red-500'}">${escapeHtml(cleanBrackets(q.options[userAns] || 'None'))}</span></p>
-              ${!isCorrect ? `<p class="text-green-600 dark:text-green-400 font-semibold">Correct: ${escapeHtml(cleanBrackets(q.options[q.correctIndex]))}</p>` : ''}
-              ${q.explanation ? `<p class="text-gray-500 dark:text-gray-400 text-[11px] pt-1 border-t border-gray-200 dark:border-gray-700">${escapeHtml(cleanBrackets(q.explanation))}</p>` : ''}
-            </div>
-          </div>
-        </div>
-      `;
-    });
-
-    resultsContainer.innerHTML = `
-      <div class="space-y-6">
-        <div class="text-center p-6 bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm space-y-2">
-          <div class="text-4xl">${passed ? '🎉' : '📚'}</div>
-          <h3 class="text-xl font-bold text-gray-900 dark:text-gray-100">${passed ? 'Great Job!' : 'Keep Practicing!'}</h3>
-          <p class="text-3xl font-extrabold ${passed ? 'text-green-600 dark:text-green-400' : 'text-amber-500'}">${scorePct}%</p>
-          <p class="text-xs text-gray-500 dark:text-gray-400">${correctCount} of ${total} questions correct</p>
-          ${passed ? `<p class="text-xs font-semibold text-green-600 dark:text-green-400">Mastery criterion reached! Slot marked complete.</p>` : `<p class="text-xs text-gray-500">Score 70% or higher to complete this slot.</p>`}
-
-          <div class="flex items-center justify-center space-x-3 pt-3">
-            <button onclick="window.app.startQuiz()"
-              class="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-xl text-xs font-semibold shadow transition-all">
-              Retake Quiz
-            </button>
-            <button onclick="window.app.showView('topic')"
-              class="px-4 py-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 text-gray-700 dark:text-gray-300 rounded-xl text-xs font-medium transition-all">
-              Back to Topic
-            </button>
-          </div>
-        </div>
-
-        <div class="space-y-3">
-          <h4 class="font-bold text-sm text-gray-900 dark:text-gray-100">Review Questions</h4>
-          <div class="space-y-2.5">
-            ${reviewHtml}
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  // --- Flashcards (Leitner SRS + 3D Flip) ---
-  startFlashcards() {
-    const topic = this.data.currentTopic;
-    if (!topic || !topic.contentSlots?.flashcards) return;
-
-    const fcData = topic.contentSlots.flashcards;
-    const cards = fcData.cards || [];
-
-    if (!cards.length) {
-      this.showToast('No cards in flashcard deck', 'error');
-      return;
-    }
-
-    if (!fcData.srs) fcData.srs = { cards: {} };
-
-    this.currentFlashcards = cards;
-    this.currentFlashcardIndex = 0;
-
-    this.showView('flashcards');
-    this.renderCurrentFlashcard();
-  }
-
-  renderCurrentFlashcard() {
-    const cards = this.currentFlashcards;
-    if (!cards.length) return;
-
-    const card = cards[this.currentFlashcardIndex];
-    const total = cards.length;
-    const currentNum = this.currentFlashcardIndex + 1;
-
-    const topic = this.data.currentTopic;
-    const srsData = topic?.contentSlots?.flashcards?.srs?.cards?.[card.id] || { box: 1 };
-
-    const counter = document.getElementById('fc-counter');
-    if (counter) counter.textContent = `${currentNum} / ${total}`;
-
-    const boxBadge = document.getElementById('fc-srs-box');
-    if (boxBadge) boxBadge.textContent = `Box ${srsData.box || 1}`;
-
-    const frontEl = document.getElementById('fc-front-text');
-    const backEl = document.getElementById('fc-back-text');
-    const hintEl = document.getElementById('fc-hint-text');
-
-    if (frontEl) frontEl.textContent = cleanBrackets(card.front);
-    if (backEl) backEl.textContent = cleanBrackets(card.back);
-    if (hintEl) {
-      hintEl.textContent = card.hint ? `💡 Hint: ${cleanBrackets(card.hint)}` : '';
-    }
-
-    // Reset card flip to front
-    const inner = document.getElementById('fc-card-inner');
-    if (inner) {
-      inner.classList.remove('rotate-y-180');
-    }
-  }
-
-  flipFlashcard() {
-    const inner = document.getElementById('fc-card-inner');
-    if (inner) {
-      inner.classList.toggle('rotate-y-180');
-    }
-  }
-
-  rateFlashcard(level) {
-    const cards = this.currentFlashcards;
-    if (!cards.length) return;
-
-    const card = cards[this.currentFlashcardIndex];
-    const topic = this.data.currentTopic;
-    const fcSlot = topic?.contentSlots?.flashcards;
-
-    if (fcSlot) {
-      if (!fcSlot.srs) fcSlot.srs = { cards: {} };
-      const currentBox = fcSlot.srs.cards[card.id]?.box || 1;
-
-      let nextBox = currentBox;
-      if (level === 'easy') nextBox = Math.min(5, currentBox + 1);
-      else if (level === 'hard') nextBox = Math.max(1, currentBox - 1);
-
-      fcSlot.srs.cards[card.id] = {
-        box: nextBox,
-        lastReviewed: this._today()
-      };
-
-      // If at end of deck, mark completed
-      if (this.currentFlashcardIndex === cards.length - 1) {
-        fcSlot.completed = true;
-        this.playAudioChime('complete');
-        this.showToast('Flashcard deck completed! 🎉', 'success');
-      }
-
-      this.saveData(false);
-    }
-
-    this.recordActivity();
-
-    // Advance
-    if (this.currentFlashcardIndex < cards.length - 1) {
-      this.currentFlashcardIndex++;
-      this.renderCurrentFlashcard();
-    } else {
-      this.renderCurrentFlashcard();
-    }
-  }
-
-  prevFlashcard() {
-    if (this.currentFlashcardIndex > 0) {
-      this.currentFlashcardIndex--;
-      this.renderCurrentFlashcard();
-    }
-  }
-
-  nextFlashcard() {
-    if (this.currentFlashcardIndex < this.currentFlashcards.length - 1) {
-      this.currentFlashcardIndex++;
-      this.renderCurrentFlashcard();
-    }
-  }
-
-  // --- Exporting (Anki TSV / Markdown) ---
-  exportAnkiDeck() {
-    const topic = this.data.currentTopic;
-    const cards = topic?.contentSlots?.flashcards?.cards || [];
-
-    if (!cards.length) {
-      this.showToast('No flashcards available to export', 'error');
-      return;
-    }
-
-    const tsvContent = cards.map(c => {
-      const front = (c.front || '').replace(/\t/g, ' ').replace(/\n/g, '<br>');
-      const back = (c.back || '').replace(/\t/g, ' ').replace(/\n/g, '<br>');
-      return `${front}\t${back}`;
-    }).join('\n');
-
-    this.downloadFile(tsvContent, `${topic.name || 'flashcards'}_anki.txt`, 'text/tab-separated-values');
-    this.showToast('Anki deck exported (TSV format)!', 'success');
-  }
-
-  exportCurrentContentMarkdown() {
-    const { type, data } = this.data.currentContent || {};
-    const topic = this.data.currentTopic;
-
-    if (!data || !topic) {
-      this.showToast('No active content to export', 'error');
-      return;
-    }
-
-    let md = `# ${topic.name}: ${this.getContentTypeTitle(type)}\n\n`;
-
-    if (type === 'core') {
-      (data.sections || []).forEach(s => {
-        md += `## ${s.heading}\n\n${s.content}\n\n`;
-        if (s.keyTakeaways?.length) {
-          md += `**Key Takeaways:**\n` + s.keyTakeaways.map(t => `- ${t}`).join('\n') + `\n\n`;
-        }
-      });
-    } else if (type === 'examples') {
-      (data.examples || []).forEach(ex => {
-        md += `## ${ex.title}\n\n**Scenario:** ${ex.scenario}\n\n${ex.walkthrough}\n\n**Takeaway:** ${ex.takeaway}\n\n`;
-      });
-    } else if (type === 'cheatsheet') {
-      md += `## Key Definitions\n\n`;
-      (data.keyFormulasOrDefinitions || []).forEach(d => {
-        md += `- **${d.term}**: ${d.definition}\n`;
-      });
-      md += `\n`;
-    }
-
-    this.downloadFile(md, `${topic.name || 'study'}_notes.md`, 'text/markdown');
-    this.showToast('Markdown exported!', 'success');
-  }
-
-  // --- Modal & Paste Handling ---
-  openPasteModal(type) {
-    const modal = document.getElementById('paste-modal');
-    const title = document.getElementById('paste-modal-title');
-    const typeInput = document.getElementById('paste-modal-type');
-    const textarea = document.getElementById('paste-modal-textarea');
-
-    if (!modal) return;
-
-    if (typeInput) typeInput.value = type;
-    if (textarea) textarea.value = '';
-
-    if (title) {
-      if (type === 'structure') {
-        title.textContent = 'Import Course Outline (JSON)';
-      } else {
-        title.textContent = `Import ${this.getContentTypeTitle(type)} (JSON)`;
-      }
-    }
-
-    modal.classList.remove('hidden');
-    if (textarea) textarea.focus();
-  }
-
-  closePasteModal() {
-    const modal = document.getElementById('paste-modal');
-    if (modal) modal.classList.add('hidden');
-  }
-
-  handlePasteModalSubmit() {
-    const typeInput = document.getElementById('paste-modal-type');
-    const textarea = document.getElementById('paste-modal-textarea');
-
-    if (!typeInput || !textarea) return;
-
-    const type = typeInput.value;
-    const rawText = textarea.value.trim();
-
-    if (!rawText) {
-      this.showToast('Please paste content first', 'error');
-      return;
-    }
-
-    const parsed = extractJsonFromText(rawText);
-    if (!parsed) {
-      this.showToast('Invalid JSON. Please verify syntax', 'error');
-      return;
-    }
-
-    if (type === 'structure') {
-      this.saveStructureFromPaste(parsed);
-    } else {
-      this.saveContentFromPaste(type, parsed);
-    }
-
-    this.closePasteModal();
-  }
-
-  saveStructureFromPaste(data) {
-        const course = this.data.currentCourse;
-    if (!course) {
-      this.showToast('No active course selected', 'error');
-      return;
-    }
-
-    if (data.courseName) course.name = data.courseName;
-    if (data.courseCode) course.code = data.courseCode;
-    if (data.description) course.description = data.description;
-
-    if (Array.isArray(data.topics) && data.topics.length) {
-      const existingMap = new Map((course.topics || []).map(t => [t.id, t]));
-
-      course.topics = data.topics.map((t, index) => {
-        const id = t.id || `topic_${index + 1}`;
-        const existing = existingMap.get(id);
-
-        return {
-          id,
-          name: t.name || `Topic ${index + 1}`,
-          description: t.description || '',
-          estimatedHours: t.estimatedHours || 2,
-          difficulty: t.difficulty || 'Intermediate',
-          contentSlots: existing?.contentSlots || {
-            core: null,
-            examples: null,
-            quiz: null,
-            flashcards: null,
-            cheatsheet: null
-          }
-        };
-      });
-
-      course.structureAnalyzed = true;
-      this.saveData(true);
-      this.recordActivity();
-      this.renderCourseView();
-      this.showToast('Course structure imported successfully!', 'success');
-    } else {
-      this.showToast('No valid topics array found in JSON', 'error');
-    }
-  }
-
-  saveContentFromPaste(type, data) {
-    const topic = this.data.currentTopic;
-    if (!topic) {
-      this.showToast('No active topic selected', 'error');
-      return;
-    }
-
-    if (!topic.contentSlots) {
-      topic.contentSlots = {
-        core: null,
-        examples: null,
-        quiz: null,
-        flashcards: null,
-        cheatsheet: null
-      };
-    }
-
-    data.completed = false;
-    if (type === 'quiz') {
-      data.attempts = [];
-      data.bestScore = 0;
-    } else if (type === 'flashcards') {
-      data.srs = { cards: {} };
-    }
-
-    topic.contentSlots[type] = data;
-    this.saveData(true);
-    this.recordActivity();
-    this.renderTopicView();
-    this.showToast(`${this.getContentTypeTitle(type)} imported successfully!`, 'success');
-  }
-
-  // --- Course Creation & Deletion ---
-  openCreateCourseModal() {
-    const modal = document.getElementById('create-course-modal');
-    if (modal) modal.classList.remove('hidden');
-    const input = document.getElementById('new-course-name');
-    if (input) {
-      input.value = '';
-      input.focus();
-    }
-    const code = document.getElementById('new-course-code');
-    if (code) code.value = '';
-    const desc = document.getElementById('new-course-desc');
-    if (desc) desc.value = '';
-  }
-
-  closeCreateCourseModal() {
-    const modal = document.getElementById('create-course-modal');
-    if (modal) modal.classList.add('hidden');
-  }
-
-  handleCreateCourseSubmit() {
-    const nameEl = document.getElementById('new-course-name');
-    const codeEl = document.getElementById('new-course-code');
-    const descEl = document.getElementById('new-course-desc');
-
-    const name = nameEl?.value?.trim();
-    if (!name) {
-      this.showToast('Please enter a course title', 'error');
-      return;
-    }
-
-    const newCourse = {
-      id: `course_${Date.now()}`,
-      name,
-      code: codeEl?.value?.trim() || '',
-      description: descEl?.value?.trim() || '',
-      structureAnalyzed: false,
-      topics: []
-    };
-
-    this.data.courses.push(newCourse);
-    this.saveData(false);
-    this.recordActivity();
-    this.closeCreateCourseModal();
-    this.openCourse(newCourse.id);
-    this.showToast('Course created! Now import or add topics.', 'success');
-  }
-
-  deleteCourse(courseId) {
-    if (!confirm('Are you sure you want to delete this course and all its study materials?')) return;
-
-    this.data.courses = this.data.courses.filter(c => c.id !== courseId);
-    this.saveData(false);
-    this.updateDashboard();
-    this.showToast('Course deleted', 'info');
-
-    if (this.data.currentCourse?.id === courseId) {
       this.showView('dashboard');
     }
   }
 
-  // --- Export & Import Entire Workspace ---
-  exportAllData() {
-    const jsonStr = JSON.stringify(this.data, null, 2);
-    this.downloadFile(jsonStr, `study_buddy_backup_${this._today()}.json`, 'application/json');
-    this.showToast('All data exported successfully!', 'success');
-  }
+  updateHeader(viewName) {
+    const titleEl = document.getElementById('header-title');
+    const subtitleEl = document.getElementById('header-subtitle');
+    const backBtn = document.getElementById('back-btn');
 
-  triggerImportData() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.json,application/json';
-    input.onchange = (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
+    if (!titleEl) return;
 
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        try {
-          const imported = JSON.parse(event.target.result);
-          if (imported && Array.isArray(imported.courses)) {
-            this.data = imported;
-            this.migrateDataSchema();
-            this.saveData(false);
-            this.applyDarkMode(this.data.settings.darkMode);
-            this.updateDashboard();
-            this.showToast('Data imported successfully!', 'success');
-          } else {
-            this.showToast('Invalid backup file structure', 'error');
-          }
-        } catch (err) {
-          this.showToast('Failed to parse JSON file', 'error');
-        }
-      };
-      reader.readAsText(file);
-    };
-    input.click();
-  }
-
-  downloadFile(content, fileName, contentType) {
-    const blob = new Blob([content], { type: contentType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 100);
-  }
-
-  // --- Toast & UI Feedback ---
-  showToast(message, type = 'info') {
-    const toast = document.getElementById('toast');
-    if (!toast) return;
-
-    toast.textContent = message;
-    toast.className = `fixed bottom-20 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-xl text-xs font-semibold shadow-xl transition-all duration-300 z-50 ${
-      type === 'success' ? 'bg-green-600 text-white' :
-      type === 'error' ? 'bg-red-600 text-white' :
-      type === 'info' ? 'bg-gray-800 text-white dark:bg-gray-200 dark:text-gray-900' :
-      'bg-primary-600 text-white'
-    }`;
-
-    toast.classList.remove('hidden', 'opacity-0', 'translate-y-2');
-    toast.classList.add('opacity-100', 'translate-y-0');
-
-    clearTimeout(this._toastTimeout);
-    this._toastTimeout = setTimeout(() => {
-      toast.classList.remove('opacity-100', 'translate-y-0');
-      toast.classList.add('opacity-0', 'translate-y-2');
-      setTimeout(() => toast.classList.add('hidden'), 300);
-    }, 2800);
-  }
-
-  showLoading(text = 'Loading...') {
-    const modal = document.getElementById('loading-modal');
-    const textEl = document.getElementById('loading-text');
-    if (modal) {
-      if (textEl) textEl.textContent = text;
-      modal.classList.remove('hidden');
+    // Back button visibility
+    const rootViews = ['dashboard', 'courses', 'study', 'pomodoro', 'prompts', 'settings'];
+    if (rootViews.includes(viewName)) {
+      backBtn?.classList.add('hidden');
+    } else {
+      backBtn?.classList.remove('hidden');
     }
-  }
 
-  hideLoading() {
-    const modal = document.getElementById('loading-modal');
-    if (modal) modal.classList.add('hidden');
-  }
-
-  getContentTypeTitle(type) {
-    switch (type) {
-      case 'core': return 'Core Concepts';
-      case 'examples': return 'Real-World Examples';
-      case 'quiz': return 'Topic Quiz';
-      case 'flashcards': return 'Flashcards';
-      case 'cheatsheet': return 'Quick Cheatsheet';
-      default: return 'Study Module';
+    switch (viewName) {
+      case 'dashboard':
+        titleEl.textContent = 'Study Buddy';
+        subtitleEl.textContent = 'Your AI Focus Hub';
+        break;
+      case 'courses':
+        titleEl.textContent = 'Courses';
+        subtitleEl.textContent = `${this.data.courses.length} Active`;
+        break;
+      case 'course-detail':
+        titleEl.textContent = this.data.currentCourse?.name || 'Course Overview';
+        subtitleEl.textContent = `${this.data.currentCourse?.topics?.length || 0} Topics`;
+        break;
+      case 'topic-detail':
+        titleEl.textContent = this.data.currentTopic?.name || 'Topic';
+        subtitleEl.textContent = this.data.currentCourse?.name || '';
+        break;
+      case 'content':
+        titleEl.textContent = this.capitalize(this.data.currentContent?.type || 'Content');
+        subtitleEl.textContent = this.data.currentTopic?.name || '';
+        break;
+      case 'quiz':
+        titleEl.textContent = 'Quiz Arena';
+        subtitleEl.textContent = this.data.currentTopic?.name || '';
+        break;
+      case 'study':
+        titleEl.textContent = 'Smart Queue';
+        subtitleEl.textContent = 'SRS & Due Reviews';
+        break;
+      case 'pomodoro':
+        titleEl.textContent = 'Focus Hub';
+        subtitleEl.textContent = 'Pomodoro Timer';
+        break;
+      case 'prompts':
+        titleEl.textContent = 'Prompts';
+        subtitleEl.textContent = 'AI Generation Library';
+        break;
+      case 'settings':
+        titleEl.textContent = 'Settings';
+        subtitleEl.textContent = 'Preferences & API';
+        break;
+      default:
+        titleEl.textContent = 'Study Buddy';
+        subtitleEl.textContent = '';
     }
+
+    this._updateStreakDisplay();
   }
 
-  // --- Global Event Listeners ---
-  setupEventListeners() {
-    // Top bar back button
-    document.getElementById('back-btn')?.addEventListener('click', () => {
-      this.handleBackNavigation();
-    });
-
-    // Dark mode toggle in Settings
-    document.getElementById('dark-mode-toggle')?.addEventListener('change', (e) => {
-      this.applyDarkMode(e.target.checked);
-      this.data.settings.darkMode = e.target.checked;
-      this.saveData(false);
-    });
-
-    // Navigation buttons in bottom dock
+  updateNavigation(viewName) {
     document.querySelectorAll('.nav-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const view = btn.dataset.view;
-        if (view) this.showView(view);
+      const active = btn.getAttribute('data-nav') === viewName;
+      if (active) {
+        btn.classList.add('text-primary-600', 'dark:text-primary-400', 'font-bold');
+        btn.classList.remove('text-slate-400');
+      } else {
+        btn.classList.remove('text-primary-600', 'dark:text-primary-400', 'font-bold');
+        btn.classList.add('text-slate-400');
+      }
+    });
+  }
+
+  // Dashboard
+  updateDashboard() {
+    const totalCourses = document.getElementById('total-courses');
+    if (totalCourses) totalCourses.textContent = this.data.courses.length;
+
+    const streakEl = document.getElementById('study-streak');
+    if (streakEl) streakEl.textContent = this.data.settings.studyStreak || 0;
+
+    const pomoHours = document.getElementById('pomodoro-count');
+    if (pomoHours) pomoHours.textContent = ((this.data.settings.focusMinutesTotal || 0) / 60).toFixed(1);
+
+    this.loadRecentActivity();
+  }
+
+  loadRecentActivity() {
+    const container = document.getElementById('recent-activity');
+    if (!container) return;
+
+    if (this.data.courses.length === 0) {
+      container.innerHTML = `
+        <div class="text-center py-6 px-4 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400">
+          <p class="text-xs font-semibold">No enrolled courses yet</p>
+          <button onclick="showView('courses')" class="mt-2 text-xs font-bold text-primary-600 dark:text-primary-400 hover:underline">+ Create your first course</button>
+        </div>
+      `;
+    } else {
+      const recentItems = this.data.courses.slice(-3).reverse();
+      container.innerHTML = recentItems.map(course => `
+        <div class="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 p-4 rounded-2xl cursor-pointer hover:border-primary-500 hover:shadow-md transition"
+             onclick="window.app.openCourse('${course.id}')">
+          <div class="flex items-center justify-between">
+            <h4 class="font-bold text-slate-900 dark:text-white text-sm">${escapeHtml(course.name)}</h4>
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-primary-50 dark:bg-primary-950/60 text-primary-600 dark:text-primary-400">${course.topics?.length || 0} topics</span>
+          </div>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mt-1 line-clamp-1">${escapeHtml(course.description || 'No description provided')}</p>
+        </div>
+      `).join('');
+    }
+  }
+  // Helpers
+  findCourseById(courseId) {
+    return this.data.courses.find(c => c.id === courseId) || null;
+  }
+  findTopicById(course, topicId) {
+    return (course?.topics || []).find(t => t.id === topicId) || null;
+  }
+  openCourse(courseId) {
+    this.showView('course-detail', { courseId });
+  }
+  openTopic(topicId) {
+    this.showView('topic-detail', { topicId });
+  }
+  openContent(type, topicId) {
+    this.showView('content', { type, topicId });
+  }
+  openQuiz(topicId) {
+    this.showView('quiz', { topicId });
+  }
+
+  // Course Management
+  showAddCourseModal() {
+    document.getElementById('add-course-modal')?.classList.remove('hidden');
+    document.getElementById('course-name')?.focus();
+  }
+
+  hideAddCourseModal() {
+    document.getElementById('add-course-modal')?.classList.add('hidden');
+    document.getElementById('add-course-form')?.reset();
+  }
+
+  addCourse(e) {
+    e.preventDefault();
+    const nameInput = document.getElementById('course-name');
+    const descInput = document.getElementById('course-description');
+
+    const name = nameInput.value.trim();
+    const description = descInput.value.trim();
+
+    if (!name) {
+      this.showToast('Please enter a course name', 'error');
+      return;
+    }
+
+    const newCourse = {
+      id: 'course_' + Date.now(),
+      name,
+      description,
+      topics: [],
+      createdAt: new Date().toISOString()
+    };
+
+    this.data.courses.push(newCourse);
+    this.saveData();
+    this.hideAddCourseModal();
+    this.showToast(`Course "${name}" created!`, 'success');
+    this.loadCourses();
+  }
+
+  confirmDeleteCourse(courseId, ev) {
+    if (ev) ev.stopPropagation();
+    const course = this.findCourseById(courseId);
+    if (!course) return;
+
+    if (confirm(`Are you sure you want to delete the course "${course.name}" and all its topics?`)) {
+      this.deleteCourse(courseId);
+    }
+  }
+
+  deleteCourse(courseId) {
+    const idx = this.data.courses.findIndex(c => c.id === courseId);
+    if (idx === -1) return;
+
+    const name = this.data.courses[idx].name;
+    this.data.courses.splice(idx, 1);
+
+    if (this.data.currentCourse?.id === courseId) {
+      this.data.currentCourse = null;
+      this.data.currentTopic = null;
+      this.data.currentContent = null;
+    }
+
+    this.saveData();
+    this.showToast(`Course "${name}" deleted.`, 'info');
+
+    if (this.data.currentView === 'courses') this.loadCourses();
+    if (this.data.currentView === 'dashboard') this.updateDashboard();
+    if (this.data.currentView === 'study') this.loadStudyView();
+    if (this.data.currentView === 'course-detail') this.showView('courses');
+  }
+
+  filterCourses(query) {
+    const q = (query || '').toLowerCase().trim();
+    if (!q) {
+      this.renderCoursesList(this.data.courses);
+      return;
+    }
+
+    const filtered = this.data.courses.filter(course => {
+      const matchName = course.name.toLowerCase().includes(q);
+      const matchDesc = (course.description || '').toLowerCase().includes(q);
+      const matchTopic = (course.topics || []).some(t => t.name.toLowerCase().includes(q));
+      return matchName || matchDesc || matchTopic;
+    });
+
+    this.renderCoursesList(filtered);
+  }
+
+  loadCourses() {
+    this.renderCoursesList(this.data.courses);
+  }
+
+  renderCoursesList(courses, container = null) {
+    const target = container || document.getElementById('courses-list');
+    if (!target) return;
+
+    if (!courses || courses.length === 0) {
+      target.innerHTML = `
+        <div class="text-center py-10 px-4 bg-slate-50 dark:bg-slate-850 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400">
+          <p class="text-xs font-semibold">No courses match your filter</p>
+          <button onclick="window.app.showAddCourseModal()" class="mt-2 text-xs font-bold text-primary-600 dark:text-primary-400 hover:underline">+ Create New Course</button>
+        </div>
+      `;
+      return;
+    }
+
+    target.innerHTML = courses.map(course => {
+      const topicsCount = course.topics?.length || 0;
+      let completedSlots = 0;
+      let totalSlots = 0;
+
+      (course.topics || []).forEach(t => {
+        ['summary', 'explainer', 'flashcards', 'quiz'].forEach(k => {
+          totalSlots++;
+          if (t.contentSlots?.[k]?.completed) completedSlots++;
+        });
+      });
+
+      const pct = totalSlots > 0 ? Math.round((completedSlots / totalSlots) * 100) : 0;
+
+      return `
+        <div class="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 p-4 rounded-2xl shadow-sm hover:border-primary-500 hover:shadow-md transition cursor-pointer group"
+             onclick="window.app.openCourse('${course.id}')">
+          <div class="flex items-start justify-between">
+            <div class="flex-1 pr-3">
+              <h3 class="font-bold text-slate-900 dark:text-white text-sm group-hover:text-primary-600 dark:group-hover:text-primary-400 transition">${escapeHtml(course.name)}</h3>
+              <p class="text-xs text-slate-500 dark:text-slate-400 mt-1 line-clamp-2 leading-relaxed">${escapeHtml(course.description || 'No description provided')}</p>
+            </div>
+            <button onclick="window.app.confirmDeleteCourse('${course.id}', event)" class="text-slate-400 hover:text-red-500 p-1 rounded-lg transition" title="Delete Course">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs">
+            <div class="flex items-center space-x-2">
+              <span class="px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-semibold text-[11px]">${topicsCount} Topics</span>
+              <span class="text-slate-400 text-[11px]">${pct}% mastered</span>
+            </div>
+            <div class="w-20 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+              <div class="bg-primary-600 h-1.5 rounded-full transition-all" style="width: ${pct}%"></div>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // Course Detail
+  loadCourseDetail(data) {
+    const courseId = data?.courseId || this.data.currentCourse?.id;
+    const course = this.findCourseById(courseId);
+
+    if (!course) {
+      this.showToast('Course not found', 'error');
+      this.showView('courses');
+      return;
+    }
+
+    this.data.currentCourse = course;
+
+    const structureSection = document.getElementById('course-structure-section');
+    const topicsSection = document.getElementById('topics-section');
+
+    if (!course.topics || course.topics.length === 0) {
+      structureSection.style.display = 'block';
+      topicsSection.classList.add('hidden');
+      document.getElementById('structure-prompt-card').style.display = 'block';
+      document.getElementById('paste-structure-card').style.display = 'none';
+    } else {
+      structureSection.style.display = 'none';
+      topicsSection.classList.remove('hidden');
+      this.loadTopics();
+    }
+  }
+
+  showStructurePrompt() {
+    document.getElementById('structure-prompt-card').style.display = 'none';
+    document.getElementById('paste-structure-card').style.display = 'block';
+    document.getElementById('structure-response').focus();
+
+    const prompt = this.getStructurePrompt();
+    this.showPromptModal('Course Structure Prompt', prompt);
+  }
+
+  parseStructureResponse() {
+    const textarea = document.getElementById('structure-response');
+    const text = textarea.value.trim();
+
+    if (!text) {
+      this.showToast('Please paste the AI output first', 'error');
+      return;
+    }
+
+    const topics = this.parseStructureText(text);
+
+    if (topics.length === 0) {
+      this.showToast('Could not find topics in response. Check the prompt format!', 'error');
+      return;
+    }
+
+    this.data.currentCourse.topics = topics;
+    this.saveData();
+
+    textarea.value = '';
+    document.getElementById('paste-structure-card').style.display = 'none';
+    document.getElementById('topics-section').classList.remove('hidden');
+    document.getElementById('course-structure-section').style.display = 'none';
+
+    this.loadTopics();
+    playSoundChime('success');
+    this.showToast(`Extracted ${topics.length} topics!`, 'success');
+  }
+
+  parseStructureText(text) {
+    const topics = [];
+
+    // Approach A: Try JSON first
+    const maybeJson = extractJsonFromText(text);
+    if (Array.isArray(maybeJson)) {
+      return maybeJson.map((t, i) => ({
+        id: 'topic_' + Date.now() + '_' + i,
+        name: cleanBrackets(t.name || t.topic || `Topic ${i + 1}`),
+        difficulty: t.difficulty || 'Medium',
+        estimatedMinutes: Number(t.estimatedMinutes) || 15,
+        contentSlots: this.createEmptyContentSlots()
+      }));
+    }
+
+    // Approach B: Markers TOPIC_START ... TOPIC_END
+    const topicBlocks = text.split(/TOPIC_START|TOPIC:/i);
+
+    for (let i = 1; i < topicBlocks.length; i++) {
+      const block = topicBlocks[i].split(/TOPIC_END/i)[0];
+      const name = this.extractValue(block, /TOPIC_NAME:\s*(.+)/i) ||
+                   this.extractValue(block, /NAME:\s*(.+)/i) ||
+                   this.extractValue(block, /TITLE:\s*(.+)/i);
+
+      if (name) {
+        const difficulty = this.extractValue(block, /DIFFICULTY:\s*(.+)/i) || 'Medium';
+        const mins = parseInt(this.extractValue(block, /ESTIMATED_TIME:\s*(\d+)/i) || '15', 10);
+
+        topics.push({
+          id: 'topic_' + Date.now() + '_' + i,
+          name: cleanBrackets(name),
+          difficulty: cleanBrackets(difficulty),
+          estimatedMinutes: mins,
+          contentSlots: this.createEmptyContentSlots()
+        });
+      }
+    }
+
+    // Approach C: Numbered list fallback "1. Topic Name"
+    if (topics.length === 0) {
+      const lines = text.split('\n');
+      let idx = 0;
+      for (const line of lines) {
+        const match = line.match(/^\s*(?:\d+[\.\)]|\-|\*)\s+(.+)/);
+        if (match && match[1].trim()) {
+          const rawTitle = match[1].split('(')[0].replace(/\[.*?\]/g, '').trim();
+          if (rawTitle.length > 2 && rawTitle.length < 80) {
+            topics.push({
+              id: 'topic_' + Date.now() + '_' + (idx++),
+              name: cleanBrackets(rawTitle),
+              difficulty: 'Medium',
+              estimatedMinutes: 15,
+              contentSlots: this.createEmptyContentSlots()
+            });
+          }
+        }
+      }
+    }
+
+    return topics;
+  }
+
+  extractValue(text, regex) {
+    const match = text.match(regex);
+    return match ? match[1].trim() : null;
+  }
+
+  createEmptyContentSlots() {
+    const slots = {};
+    const types = ['summary', 'explainer', 'flashcards', 'quiz'];
+    types.forEach(type => {
+      slots[type] = {
+        content: null,
+        completed: false,
+        lastStudied: null,
+        srs: { cards: {} } // SM-2 card tracking
+      };
+    });
+    return slots;
+  }
+
+  loadTopics() {
+    const container = document.getElementById('topics-list');
+    if (!container || !this.data.currentCourse) return;
+
+    const topics = this.data.currentCourse.topics || [];
+    if (topics.length === 0) {
+      container.innerHTML = '<p class="text-xs text-slate-400">No topics found.</p>';
+      return;
+    }
+
+    container.innerHTML = topics.map((topic, index) => {
+      let completedCount = 0;
+      ['summary', 'explainer', 'flashcards', 'quiz'].forEach(t => {
+        if (topic.contentSlots?.[t]?.completed) completedCount++;
+      });
+      const pct = Math.round((completedCount / 4) * 100);
+
+      const diffColor = topic.difficulty === 'Beginner' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300' :
+                        topic.difficulty === 'Advanced' ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300' :
+                        'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300';
+
+      return `
+        <div class="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 p-4 rounded-2xl hover:border-primary-500 hover:shadow-md transition cursor-pointer group"
+             onclick="window.app.openTopic('${topic.id}')">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+              <span class="w-6 h-6 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-500 font-bold text-xs flex items-center justify-center">${index + 1}</span>
+              <div>
+                <h4 class="font-bold text-slate-900 dark:text-white text-sm group-hover:text-primary-600 dark:group-hover:text-primary-400 transition">${escapeHtml(topic.name)}</h4>
+                <div class="flex items-center space-x-2 mt-0.5">
+                  <span class="text-[10px] px-2 py-0.5 rounded-full font-bold ${diffColor}">${escapeHtml(topic.difficulty || 'Medium')}</span>
+                  <span class="text-[11px] text-slate-400">⏱️ ${topic.estimatedMinutes || 15}m</span>
+                </div>
+              </div>
+            </div>
+            <div class="text-right">
+              <span class="text-xs font-bold text-slate-700 dark:text-slate-300">${completedCount}/4</span>
+              <p class="text-[10px] text-slate-400">${pct}% done</p>
+            </div>
+          </div>
+          <div class="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1 mt-3 overflow-hidden">
+            <div class="bg-primary-600 h-1 rounded-full transition-all" style="width: ${pct}%"></div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // Topic Detail View
+  loadTopicDetail(data) {
+    const topicId = data?.topicId || this.data.currentTopic?.id;
+    const course = this.data.currentCourse;
+
+    if (!course) {
+      this.showView('courses');
+      return;
+    }
+
+    const topic = this.findTopicById(course, topicId);
+    if (!topic) {
+      this.showToast('Topic not found', 'error');
+      this.showView('course-detail', { courseId: course.id });
+      return;
+    }
+
+    this.data.currentTopic = topic;
+
+    // Header info
+    const titleEl = document.getElementById('topic-title');
+    const diffEl = document.getElementById('topic-difficulty');
+    const progEl = document.getElementById('topic-progress');
+
+    if (titleEl) titleEl.textContent = topic.name;
+    if (diffEl) diffEl.textContent = topic.difficulty || 'Medium';
+
+    let completed = 0;
+    ['summary', 'explainer', 'flashcards', 'quiz'].forEach(t => {
+      if (topic.contentSlots?.[t]?.completed) completed++;
+    });
+
+    if (progEl) progEl.textContent = `${completed}/4 modules completed`;
+
+    this.loadContentSlots(topic);
+  }
+
+  loadContentSlots(topic) {
+    const container = document.getElementById('content-slots');
+    if (!container) return;
+
+    const slotTypes = [
+      { key: 'summary', name: 'Comprehensive Summary', icon: '📝', desc: 'Markdown study notes and concepts', badgeBg: 'bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-300' },
+      { key: 'explainer', name: 'Concept Explainer', icon: '💡', desc: 'Intuitions, real-world analogies', badgeBg: 'bg-amber-50 text-amber-600 dark:bg-amber-950/60 dark:text-amber-300' },
+      { key: 'flashcards', name: '3D Flashcards (SM-2 SRS)', icon: '🃏', desc: 'Active recall spaced repetition cards', badgeBg: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-300' },
+      { key: 'quiz', name: '10-Question MCQ Arena', icon: '📊', desc: 'Timed quiz with instant answers', badgeBg: 'bg-purple-50 text-purple-600 dark:bg-purple-950/60 dark:text-purple-300' }
+    ];
+
+    container.innerHTML = slotTypes.map(t => {
+      const slot = topic.contentSlots?.[t.key];
+      const hasContent = !!slot?.content;
+      const isCompleted = !!slot?.completed;
+
+      let statusChip = '<span class="text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-100 dark:bg-slate-800 text-slate-500">Empty</span>';
+      if (isCompleted) {
+        statusChip = '<span class="text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300">✓ Completed</span>';
+      } else if (hasContent) {
+        statusChip = '<span class="text-[10px] px-2 py-0.5 rounded-full font-bold bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300">Ready to Study</span>';
+      }
+
+      let actions = '';
+      if (t.key === 'quiz') {
+        actions = `
+          <div class="flex space-x-2 mt-3">
+            <button onclick="window.app.openContent('quiz', '${topic.id}')" class="flex-1 py-2 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold hover:bg-slate-200 transition">
+              ${hasContent ? 'Edit Quiz' : 'Add Quiz'}
+            </button>
+            <button onclick="window.app.openQuiz('${topic.id}')" ${!hasContent ? 'disabled' : ''} class="flex-1 py-2 px-3 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold disabled:opacity-40 shadow-sm transition">
+              Launch Quiz 🚀
+            </button>
+          </div>
+        `;
+      } else if (t.key === 'flashcards') {
+        actions = `
+          <div class="flex space-x-2 mt-3">
+            <button onclick="window.app.openContent('flashcards', '${topic.id}')" class="flex-1 py-2 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold hover:bg-slate-200 transition">
+              ${hasContent ? 'Edit Cards' : 'Add Cards'}
+            </button>
+            <button onclick="window.app.openFlashcardsStudy('${topic.id}')" ${!hasContent ? 'disabled' : ''} class="flex-1 py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold disabled:opacity-40 shadow-sm transition">
+              Practice SRS 🃏
+            </button>
+          </div>
+        `;
+      } else {
+        actions = `
+          <div class="flex space-x-2 mt-3">
+            <button onclick="window.app.openContent('${t.key}', '${topic.id}')" class="flex-1 py-2 px-3 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold shadow-sm transition">
+              ${hasContent ? 'Open Material' : 'Generate / Add'}
+            </button>
+          </div>
+        `;
+      }
+
+      return `
+        <div class="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 p-4 rounded-2xl shadow-sm space-y-2">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center space-x-2.5">
+              <span class="w-8 h-8 rounded-xl ${t.badgeBg} flex items-center justify-center text-sm">${t.icon}</span>
+              <span class="font-bold text-slate-900 dark:text-white text-xs">${escapeHtml(t.name)}</span>
+            </div>
+            <div>${statusChip}</div>
+          </div>
+          <div>${actions}</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // Content View
+  loadContentView(data) {
+    const type = data?.type || this.data.currentContent?.type;
+    const topicId = data?.topicId || this.data.currentContent?.topicId || this.data.currentTopic?.id;
+    const course = this.data.currentCourse;
+
+    if (!course || !topicId || !type) {
+      this.showView('courses');
+      return;
+    }
+
+    const topic = this.findTopicById(course, topicId);
+    if (!topic) {
+      this.showView('course-detail', { courseId: course.id });
+      return;
+    }
+
+    this.data.currentTopic = topic;
+    this.data.currentContent = { type, topicId };
+
+    document.getElementById('content-title').textContent = this.capitalize(type);
+    document.getElementById('content-topic').textContent = topic.name;
+
+    const slot = topic.contentSlots?.[type];
+    const actionsDiv = document.getElementById('content-actions');
+    const displayDiv = document.getElementById('content-display');
+    const pasteSec = document.getElementById('paste-content-section');
+
+    if (slot && slot.content) {
+      actionsDiv.classList.add('hidden');
+      displayDiv.classList.remove('hidden');
+      pasteSec.style.display = 'none';
+      this.displayParsedContent(slot.content, type);
+    } else {
+      actionsDiv.classList.remove('hidden');
+      displayDiv.classList.add('hidden');
+      pasteSec.style.display = 'none';
+    }
+  }
+
+  showContentPrompt() {
+    const pasteSection = document.getElementById('paste-content-section');
+    pasteSection.style.display = 'block';
+    document.getElementById('content-response').focus();
+
+    const slotType = this.data.currentContent?.type;
+    const topic = this.data.currentTopic;
+    const prompt = this.getContentPrompt(slotType, topic);
+    this.showPromptModal(`Prompt: ${this.capitalize(slotType)}`, prompt);
+  }
+
+  parseContentResponse(response, type) {
+    const trimmed = (response || '').trim();
+    if (!trimmed) return null;
+
+    if (type === 'flashcards' || type === 'quiz') {
+      const parsedJson = extractJsonFromText(trimmed);
+      if (parsedJson) return parsedJson;
+
+      // Flashcard simple bullet parsing fallback
+      if (type === 'flashcards') {
+        const cards = [];
+        const lines = trimmed.split('\n');
+        for (const line of lines) {
+          if (line.includes(' - ') || line.includes(' : ') || line.includes('\t')) {
+            const parts = line.split(/ - | : |\t/);
+            if (parts.length >= 2) {
+              cards.push({
+                front: parts[0].replace(/^[\*\-\d\.]+\s*/, '').trim(),
+                back: parts[1].trim()
+              });
+            }
+          }
+        }
+        if (cards.length > 0) return { flashcards: cards };
+      }
+
+      // Quiz fallback parsing
+      if (type === 'quiz') {
+        const questions = [];
+        const qBlocks = trimmed.split(/Q\d+:|Question \d+:/i);
+        for (let i = 1; i < qBlocks.length; i++) {
+          const qText = qBlocks[i].split('\n')[0].trim();
+          const optMatches = qBlocks[i].match(/[A-D]\)\s*([^\n]+)/g);
+          if (qText && optMatches && optMatches.length >= 2) {
+            questions.push({
+              question: qText,
+              options: optMatches.map(o => o.replace(/^[A-D]\)\s*/, '').trim()),
+              correctAnswer: 0,
+              explanation: 'Select the best answer.'
+            });
+          }
+        }
+        if (questions.length > 0) return { questions };
+      }
+
+      throw new Error('Could not parse valid JSON or formatted cards/questions from AI output.');
+    }
+
+    // Markdown content
+    return trimmed;
+  }
+
+  saveContent() {
+    const textarea = document.getElementById('content-response');
+    const raw = textarea.value.trim();
+
+    if (!raw) {
+      this.showToast('Please paste or write content before saving', 'error');
+      return;
+    }
+
+    const type = this.data.currentContent?.type;
+    const topic = this.data.currentTopic;
+
+    try {
+      const parsed = this.parseContentResponse(raw, type);
+
+      if (!topic.contentSlots) topic.contentSlots = {};
+      if (!topic.contentSlots[type]) {
+        topic.contentSlots[type] = { content: null, completed: false, lastStudied: null, srs: { cards: {} } };
+      }
+
+      topic.contentSlots[type].content = parsed;
+      topic.contentSlots[type].completed = true;
+      topic.contentSlots[type].lastStudied = new Date().toISOString();
+
+      this.recordActivity();
+      this.saveData();
+
+      textarea.value = '';
+      document.getElementById('paste-content-section').style.display = 'none';
+      document.getElementById('content-actions').classList.add('hidden');
+      document.getElementById('content-display').classList.remove('hidden');
+
+      this.displayParsedContent(parsed, type);
+      playSoundChime('success');
+      this.showToast(`${this.capitalize(type)} saved successfully!`, 'success');
+    } catch (err) {
+      this.showToast('Save failed: ' + err.message, 'error');
+    }
+  }
+
+  displayParsedContent(content, type) {
+    const container = document.getElementById('parsed-content');
+    if (!container) return;
+
+    if (type === 'flashcards') {
+      const cards = content.flashcards || (Array.isArray(content) ? content : []);
+      if (cards.length === 0) {
+        container.innerHTML = '<p class="text-xs text-slate-400">No cards found in stored data.</p>';
+        return;
+      }
+      container.innerHTML = `
+        <div class="mb-4">
+          <button onclick="window.app.openFlashcardsStudy()" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold p-3 rounded-2xl text-xs shadow-md transition flex items-center justify-center space-x-2">
+            <span>🃏 Launch 3D Flashcard Study Session (${cards.length} cards)</span>
+          </button>
+        </div>
+        <div class="space-y-2">
+          ${cards.map((c, i) => `
+            <div class="p-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 rounded-xl text-xs space-y-1">
+              <p class="font-bold text-slate-900 dark:text-white">Q${i + 1}: ${escapeHtml(c.front || c.question || '')}</p>
+              <p class="text-slate-600 dark:text-slate-300 font-medium">A: ${escapeHtml(c.back || c.answer || '')}</p>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    } else if (type === 'quiz') {
+      const qs = content.questions || (Array.isArray(content) ? content : []);
+      container.innerHTML = `
+        <div class="mb-4">
+          <button onclick="window.app.openQuiz()" class="w-full bg-primary-600 hover:bg-primary-700 text-white font-bold p-3 rounded-2xl text-xs shadow-md transition flex items-center justify-center space-x-2">
+            <span>📊 Start Interactive Quiz Arena (${qs.length} Questions)</span>
+          </button>
+        </div>
+        <div class="space-y-3">
+          ${qs.map((q, i) => `
+            <div class="p-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 rounded-xl text-xs space-y-1.5">
+              <p class="font-bold text-slate-900 dark:text-white">${i + 1}. ${escapeHtml(q.question)}</p>
+              <ul class="list-disc pl-4 space-y-0.5 text-slate-600 dark:text-slate-300">
+                ${(q.options || []).map((opt, oi) => `
+                  <li class="${oi === q.correctAnswer ? 'font-bold text-emerald-600 dark:text-emerald-400' : ''}">${escapeHtml(opt)}</li>
+                `).join('')}
+              </ul>
+              ${q.explanation ? `<p class="text-[11px] text-slate-400 italic mt-1">Note: ${escapeHtml(q.explanation)}</p>` : ''}
+            </div>
+          `).join('')}
+        </div>
+      `;
+    } else {
+      // Markdown render
+      container.innerHTML = this.renderMarkdown(typeof content === 'string' ? content : JSON.stringify(content, null, 2));
+    }
+  }
+
+  cancelContentEdit() {
+    const pasteSection = document.getElementById('paste-content-section');
+    pasteSection.style.display = 'none';
+
+    const slot = this.data.currentTopic?.contentSlots?.[this.data.currentContent?.type];
+    if (slot && slot.content) {
+      document.getElementById('content-actions').classList.add('hidden');
+      document.getElementById('content-display').classList.remove('hidden');
+    }
+  }
+
+  editContent() {
+    const slot = this.data.currentTopic?.contentSlots?.[this.data.currentContent?.type];
+    if (!slot) return;
+
+    const contentVal = typeof slot.content === 'object' ? JSON.stringify(slot.content, null, 2) : slot.content;
+    document.getElementById('content-response').value = contentVal;
+
+    document.getElementById('content-display').classList.add('hidden');
+    document.getElementById('content-actions').classList.remove('hidden');
+    document.getElementById('paste-content-section').style.display = 'block';
+  }
+
+  deleteContent() {
+    if (!confirm('Are you sure you want to remove this module content?')) return;
+
+    const type = this.data.currentContent?.type;
+    const topic = this.data.currentTopic;
+
+    if (topic?.contentSlots?.[type]) {
+      topic.contentSlots[type].content = null;
+      topic.contentSlots[type].completed = false;
+    }
+
+    this.saveData();
+    this.showToast('Module content deleted', 'info');
+    this.loadContentView({ type, topicId: topic.id });
+  }
+
+  // 3D Animated Flashcards SRS
+  openFlashcardsStudy(topicId = null) {
+    const tId = topicId || this.data.currentTopic?.id;
+    const topic = this.findTopicById(this.data.currentCourse, tId) || this.data.currentTopic;
+
+    if (!topic) return;
+    this.data.currentTopic = topic;
+
+    const slot = topic.contentSlots?.flashcards;
+    const cards = slot?.content?.flashcards || (Array.isArray(slot?.content) ? slot.content : []);
+
+    if (cards.length === 0) {
+      this.showToast('No flashcards found. Please generate or paste flashcards first!', 'error');
+      return;
+    }
+
+    // Ensure SRS state dict
+    if (!slot.srs) slot.srs = { cards: {} };
+    if (!slot.srs.cards) slot.srs.cards = {};
+
+    this._flash = {
+      topicId: topic.id,
+      srsRef: slot.srs.cards,
+      deck: cards,
+      index: 0,
+      total: cards.length,
+      flipped: false,
+      seen: 0
+    };
+
+    const modal = document.getElementById('flashcards-modal');
+    modal?.classList.remove('hidden');
+
+    this._wireFlashModal();
+    this._renderFlashcard();
+  }
+
+  closeFlashcardsStudy() {
+    const modal = document.getElementById('flashcards-modal');
+    modal?.classList.add('hidden');
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    this._flash = null;
+  }
+
+  _flipFlashcard() {
+    if (!this._flash) return;
+    this._flash.flipped = !this._flash.flipped;
+    const cardInner = document.getElementById('flashcard-card-inner');
+    if (cardInner) {
+      cardInner.classList.toggle('rotate-y-180', this._flash.flipped);
+    }
+  }
+
+  _nextFlashcard() {
+    if (!this._flash) return;
+    if (this._flash.index < this._flash.total - 1) {
+      this._flash.index++;
+      this._flash.flipped = false;
+      const cardInner = document.getElementById('flashcard-card-inner');
+      if (cardInner) cardInner.classList.remove('rotate-y-180');
+      this._renderFlashcard();
+    } else {
+      // Completed session
+      playSoundChime('success');
+      this.showToast('Flashcard deck completed! Great job! 🎉', 'success');
+
+      const topic = this.data.currentTopic;
+      if (topic?.contentSlots?.flashcards) {
+        topic.contentSlots.flashcards.completed = true;
+        topic.contentSlots.flashcards.lastStudied = new Date().toISOString();
+      }
+
+      this.recordActivity();
+      this.saveData(false);
+      this.closeFlashcardsStudy();
+      if (this.data.currentView === 'topic-detail') this.loadTopicDetail();
+      if (this.data.currentView === 'study') this.loadStudyView();
+    }
+  }
+
+  _prevFlashcard() {
+    if (!this._flash || this._flash.index <= 0) return;
+    this._flash.index--;
+    this._flash.flipped = false;
+    const cardInner = document.getElementById('flashcard-card-inner');
+    if (cardInner) cardInner.classList.remove('rotate-y-180');
+    this._renderFlashcard();
+  }
+
+  // SM-2 Spaced Repetition Algorithm
+  _gradeFlashcard(quality) {
+    // quality: 1 = Again, 2 = Hard, 3 = Good, 4 = Easy
+    if (!this._flash) return;
+    const cardId = `c_${this._flash.index}`;
+    const srs = this._flash.srsRef;
+
+    let item = srs[cardId] || { reps: 0, interval: 1, ease: 2.5, due: this._today() };
+
+    if (quality < 3) {
+      item.reps = 0;
+      item.interval = 1;
+    } else {
+      if (item.reps === 0) item.interval = 1;
+      else if (item.reps === 1) item.interval = quality === 4 ? 6 : 4;
+      else item.interval = Math.round(item.interval * item.ease);
+
+      item.reps++;
+    }
+
+    // Ease Factor update
+    item.ease = Math.max(1.3, item.ease + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02)));
+    item.due = this._addDays(item.interval);
+    srs[cardId] = item;
+
+    if (quality >= 3) {
+      playSoundChime('success');
+    }
+
+    this._flash.seen = Math.max(this._flash.seen, this._flash.index + 1);
+    this.recordActivity();
+    this.saveData(false);
+    this._nextFlashcard();
+  }
+  _renderFlashcard() {
+    if (!this._flash) return;
+    const { index, total, deck, srsRef } = this._flash;
+    const card = deck[index];
+
+    const countsEl = document.getElementById('flash-counts');
+    if (countsEl) countsEl.textContent = `Card ${index + 1} of ${total}`;
+
+    const progBar = document.getElementById('flash-progress-bar');
+    const progText = document.getElementById('flash-progress-text');
+    const pct = Math.round(((index + 1) / total) * 100);
+    if (progBar) progBar.style.width = `${pct}%`;
+    if (progText) progText.textContent = `${pct}% completed`;
+
+    const frontEl = document.getElementById('flash-front');
+    const backEl = document.getElementById('flash-back');
+    if (frontEl) frontEl.textContent = card.front || card.question || '';
+    if (backEl) backEl.textContent = card.back || card.answer || '';
+
+    // Due info badge
+    const cardId = `c_${index}`;
+    const st = srsRef[cardId];
+    const info = document.getElementById('flash-due-info');
+    if (info) {
+      if (!st) { info.textContent = 'Status: New Card'; }
+      else { info.textContent = `Ease ${st.ease.toFixed(2)} • Interval ${st.interval}d • Due ${st.due}`; }
+    }
+  }
+
+  _wireFlashModal() {
+    if (this._flashWired) return;
+    this._flashWired = true;
+
+    document.addEventListener('keydown', (e) => {
+      const modal = document.getElementById('flashcards-modal');
+      if (!modal || modal.classList.contains('hidden') || !this._flash) return;
+
+      if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); this._flipFlashcard(); }
+      else if (e.key === 'ArrowRight') this._nextFlashcard();
+      else if (e.key === 'ArrowLeft') this._prevFlashcard();
+      else if (e.key === '1') this._gradeFlashcard(1);
+      else if (e.key === '2') this._gradeFlashcard(2);
+      else if (e.key === '3') this._gradeFlashcard(3);
+      else if (e.key === '4') this._gradeFlashcard(4);
+    });
+
+    document.getElementById('flashcard-card-inner')?.addEventListener('click', () => this._flipFlashcard());
+    document.getElementById('flash-close-btn')?.addEventListener('click', () => this.closeFlashcardsStudy());
+    document.getElementById('flash-flip-btn')?.addEventListener('click', () => this._flipFlashcard());
+    document.getElementById('flash-next-btn')?.addEventListener('click', () => this._nextFlashcard());
+    document.getElementById('flash-prev-btn')?.addEventListener('click', () => this._prevFlashcard());
+
+    document.getElementById('flash-grade-again')?.addEventListener('click', () => this._gradeFlashcard(1));
+    document.getElementById('flash-grade-hard')?.addEventListener('click', () => this._gradeFlashcard(2));
+    document.getElementById('flash-grade-good')?.addEventListener('click', () => this._gradeFlashcard(3));
+    document.getElementById('flash-grade-easy')?.addEventListener('click', () => this._gradeFlashcard(4));
+
+    document.getElementById('flash-tts-btn')?.addEventListener('click', () => {
+      if (!('speechSynthesis' in window) || !this._flash) return;
+      const card = this._flash.deck[this._flash.index];
+      const text = this._flash.flipped ? (card.back || card.answer) : (card.front || card.question);
+      if (text) {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        window.speechSynthesis.speak(u);
+      }
+    });
+  }
+
+  // Quiz Engine
+  loadQuizView(data) {
+    const topicId = data?.topicId || this.data.currentTopic?.id;
+    const course = this.data.currentCourse;
+
+    if (!course || !topicId) {
+      this.showView('courses');
+      return;
+    }
+
+    const topic = this.findTopicById(course, topicId);
+    if (!topic) {
+      this.showView('course-detail', { courseId: course.id });
+      return;
+    }
+
+    this.data.currentTopic = topic;
+    const slot = topic.contentSlots?.quiz;
+
+    if (!slot || !slot.content) {
+      this.showToast('Please generate or paste a quiz first!', 'error');
+      this.showView('content', { type: 'quiz', topicId: topic.id });
+      return;
+    }
+
+    const quizData = slot.content;
+    const questions = quizData.questions || (Array.isArray(quizData) ? quizData : []);
+
+    if (questions.length === 0) {
+      this.showToast('No quiz questions found in stored data.', 'error');
+      this.showView('content', { type: 'quiz', topicId: topic.id });
+      return;
+    }
+
+    // Initialize Quiz state
+    this.currentQuiz = {
+      questions: questions,
+      currentIndex: 0,
+      userAnswers: new Array(questions.length).fill(null),
+      answers: new Array(questions.length).fill(null),
+      score: 0,
+      timer: null,
+      seconds: 0,
+      startTime: Date.now(),
+      locked: false,
+      isReviewMode: false
+    };
+
+    // Reset views
+    document.getElementById('quiz-results')?.classList.add('hidden');
+    document.getElementById('quiz-review-card')?.classList.add('hidden');
+    document.getElementById('quiz-question-card')?.classList.remove('hidden');
+    document.getElementById('quiz-controls')?.classList.remove('hidden');
+
+    const titleEl = document.getElementById('quiz-title');
+    if (titleEl) titleEl.textContent = topic.name;
+
+    this.startQuiz();
+  }
+
+  startQuiz() {
+    this.displayQuizQuestion();
+    this.startQuizTimer();
+    this.updateQuizProgress();
+  }
+
+  stopQuizTimer() {
+    if (this.currentQuiz?.timer) {
+      clearInterval(this.currentQuiz.timer);
+      this.currentQuiz.timer = null;
+    }
+  }
+
+  startQuizTimer() {
+    this.stopQuizTimer();
+    const timerEl = document.getElementById('quiz-timer');
+    this.currentQuiz.timer = setInterval(() => {
+      this.currentQuiz.seconds++;
+      const mins = Math.floor(this.currentQuiz.seconds / 60);
+      const secs = this.currentQuiz.seconds % 60;
+      if (timerEl) {
+        timerEl.textContent = `⏱️ ${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+      }
+    }, 1000);
+  }
+
+  displayQuizQuestion() {
+    const q = this.currentQuiz.questions[this.currentQuiz.currentIndex];
+    if (!q) return;
+
+    this.currentQuiz.locked = false;
+
+    const questionTextEl = document.getElementById('question-text');
+    const optionsContainer = document.getElementById('question-options');
+    const submitBtn = document.getElementById('quiz-submit-btn');
+    const nextBtn = document.getElementById('quiz-next-btn');
+
+    if (questionTextEl) questionTextEl.textContent = q.question;
+    if (submitBtn) {
+      submitBtn.style.display = 'inline-block';
+      submitBtn.disabled = true;
+    }
+    if (nextBtn) nextBtn.style.display = 'none';
+
+    // Existing answer for back navigation
+    const prevAnswer = this.currentQuiz.userAnswers[this.currentQuiz.currentIndex];
+
+    if (optionsContainer) {
+      optionsContainer.innerHTML = (q.options || []).map((opt, i) => {
+        const isChecked = prevAnswer === i ? 'checked' : '';
+        return `
+          <label class="quiz-option-label flex items-center p-3 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-primary-500 hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer transition text-xs font-semibold" data-index="${i}">
+            <input type="radio" name="quiz-option" value="${i}" ${isChecked} class="mr-3 text-primary-600 focus:ring-primary-500" />
+            <span class="text-slate-800 dark:text-slate-200">${escapeHtml(opt)}</span>
+          </label>
+        `;
+      }).join('');
+
+      // Enable submit when radio selected
+      optionsContainer.querySelectorAll('input[type="radio"]').forEach(r => {
+        r.addEventListener('change', () => {
+          if (submitBtn) submitBtn.disabled = false;
+        });
+      });
+    }
+
+    if (prevAnswer !== null && prevAnswer !== undefined) {
+      this.lockAndShowFeedback(prevAnswer);
+    }
+  }
+
+  submitQuizAnswer() {
+    if (this.currentQuiz.locked) return;
+
+    const selected = document.querySelector('input[name="quiz-option"]:checked');
+    if (!selected) {
+      this.showToast('Please select an option first!', 'info');
+      return;
+    }
+
+    const answerIndex = parseInt(selected.value, 10);
+    this.currentQuiz.userAnswers[this.currentQuiz.currentIndex] = answerIndex;
+    this.lockAndShowFeedback(answerIndex);
+    this.updateQuizProgress();
+  }
+
+  lockAndShowFeedback(answerIndex) {
+    this.currentQuiz.locked = true;
+
+    const q = this.currentQuiz.questions[this.currentQuiz.currentIndex];
+    const isCorrect = answerIndex === q.correctAnswer;
+
+    // Play chime sound
+    playSoundChime(isCorrect ? 'success' : 'wrong');
+
+    // Visual feedback
+    this.showQuizFeedback(isCorrect, q, answerIndex);
+
+    // Toggle button to next
+    const submitBtn = document.getElementById('quiz-submit-btn');
+    const nextBtn = document.getElementById('quiz-next-btn');
+
+    if (submitBtn) submitBtn.style.display = 'none';
+    if (nextBtn) {
+      nextBtn.style.display = 'inline-block';
+      const isLast = this.currentQuiz.currentIndex === this.currentQuiz.questions.length - 1;
+      nextBtn.textContent = isLast ? 'Finish Quiz 🎉' : 'Next Question ➔';
+    }
+  }
+
+  showQuizFeedback(isCorrect, question, selectedIndex) {
+    const labels = document.querySelectorAll('.quiz-option-label');
+    labels.forEach((label, idx) => {
+      const radio = label.querySelector('input');
+      if (radio) radio.disabled = true;
+
+      if (idx === question.correctAnswer) {
+        label.classList.add('bg-emerald-50', 'border-emerald-500', 'text-emerald-800', 'dark:bg-emerald-950/40', 'dark:text-emerald-200');
+      } else if (idx === selectedIndex && !isCorrect) {
+        label.classList.add('bg-red-50', 'border-red-500', 'text-red-800', 'dark:bg-red-950/40', 'dark:text-red-200');
+      } else {
+        label.classList.add('opacity-50');
+      }
+    });
+
+    if (question.explanation) {
+      const card = document.getElementById('quiz-question');
+      const note = document.createElement('div');
+      note.className = 'mt-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800 text-xs text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 italic';
+      note.textContent = `💡 Explanation: ${question.explanation}`;
+      card?.appendChild(note);
+    }
+  }
+
+  handleQuizNextOrFinish() {
+    if (this.currentQuiz.currentIndex < this.currentQuiz.questions.length - 1) {
+      this.nextQuizQuestion();
+    } else {
+      this.finishQuiz();
+    }
+  }
+
+  nextQuizQuestion() {
+    if (this.currentQuiz.currentIndex < this.currentQuiz.questions.length - 1) {
+      this.currentQuiz.currentIndex++;
+      this.displayQuizQuestion();
+      this.updateQuizProgress();
+    }
+  }
+
+  prevQuizQuestion() {
+    if (this.currentQuiz.currentIndex > 0) {
+      this.currentQuiz.currentIndex--;
+      this.displayQuizQuestion();
+      this.updateQuizProgress();
+    }
+  }
+
+  finishQuiz() {
+    this.stopQuizTimer();
+
+    let score = 0;
+    this.currentQuiz.questions.forEach((q, i) => {
+      if (this.currentQuiz.userAnswers[i] === q.correctAnswer) {
+        score++;
+      }
+    });
+    this.currentQuiz.score = score;
+
+    const timeSpent = Math.round((Date.now() - this.currentQuiz.startTime) / 1000);
+    const total = this.currentQuiz.questions.length;
+    const pct = Math.round((score / total) * 100);
+
+    // Save state
+    const topic = this.data.currentTopic;
+    if (topic?.contentSlots?.quiz) {
+      topic.contentSlots.quiz.completed = true;
+      topic.contentSlots.quiz.lastStudied = new Date().toISOString();
+      topic.contentSlots.quiz.lastScore = {
+        score,
+        total,
+        percentage: pct,
+        timeSpent,
+        date: new Date().toISOString(),
+        answers: this.currentQuiz.userAnswers.slice()
+      };
+    }
+
+    this.recordActivity();
+    this.saveData(false);
+
+    // Show Results View
+    document.getElementById('quiz-question-card')?.classList.add('hidden');
+    document.getElementById('quiz-controls')?.classList.add('hidden');
+
+    const res = document.getElementById('quiz-results');
+    res?.classList.remove('hidden');
+
+    const finalScore = document.getElementById('final-score');
+    const breakdown = document.getElementById('score-breakdown');
+
+    if (finalScore) finalScore.textContent = `${pct}%`;
+    if (breakdown) {
+      breakdown.textContent = `You scored ${score} out of ${total} in ${Math.floor(timeSpent / 60)}m ${timeSpent % 60}s.`;
+    }
+
+    playSoundChime(pct >= 60 ? 'success' : 'wrong');
+  }
+
+  updateQuizProgress() {
+    const total = this.currentQuiz.questions.length;
+    const current = this.currentQuiz.currentIndex + 1;
+    const pct = Math.round((current / total) * 100);
+
+    const bar = document.getElementById('quiz-progress-bar');
+    const numEl = document.getElementById('quiz-question-number');
+    const prevBtn = document.getElementById('quiz-prev-btn');
+
+    if (bar) bar.style.width = `${pct}%`;
+    if (numEl) numEl.textContent = `Question ${current} of ${total}`;
+    if (prevBtn) prevBtn.disabled = this.currentQuiz.currentIndex === 0;
+
+    let answered = 0;
+    this.currentQuiz.userAnswers.forEach(a => { if (a !== null && a !== undefined) answered++; });
+    const scoreEl = document.getElementById('quiz-score');
+    if (scoreEl) scoreEl.textContent = `Answered: ${answered}/${total}`;
+  }
+
+  retakeQuiz() {
+    this.stopQuizTimer();
+    this.currentQuiz.currentIndex = 0;
+    this.currentQuiz.userAnswers = new Array(this.currentQuiz.questions.length).fill(null);
+    this.currentQuiz.score = 0;
+    this.currentQuiz.seconds = 0;
+    this.currentQuiz.startTime = Date.now();
+    this.currentQuiz.locked = false;
+
+    document.getElementById('quiz-results')?.classList.add('hidden');
+    document.getElementById('quiz-review-card')?.classList.add('hidden');
+    document.getElementById('quiz-question-card')?.classList.remove('hidden');
+    document.getElementById('quiz-controls')?.classList.remove('hidden');
+
+    this.startQuiz();
+  }
+
+  reviewQuizAnswers() {
+    document.getElementById('quiz-results')?.classList.add('hidden');
+    const reviewCard = document.getElementById('quiz-review-card');
+    reviewCard?.classList.remove('hidden');
+
+    const list = document.getElementById('quiz-review-list');
+    if (!list) return;
+
+    list.innerHTML = this.currentQuiz.questions.map((q, i) => {
+      const userAns = this.currentQuiz.userAnswers[i];
+      const isCorrect = userAns === q.correctAnswer;
+      const optUser = q.options?.[userAns] || 'Skipped';
+      const optCorrect = q.options?.[q.correctAnswer] || '';
+
+      return `
+        <div class="p-4 rounded-2xl border ${isCorrect ? 'border-emerald-200 dark:border-emerald-900 bg-emerald-50/50 dark:bg-emerald-950/20' : 'border-red-200 dark:border-red-900 bg-red-50/50 dark:bg-red-950/20'} space-y-2 text-xs">
+          <div class="flex items-start justify-between font-bold">
+            <span class="text-slate-900 dark:text-white">${i + 1}. ${escapeHtml(q.question)}</span>
+            <span class="${isCorrect ? 'text-emerald-600' : 'text-red-600'} font-black text-sm">${isCorrect ? '✓' : '✗'}</span>
+          </div>
+          <div class="space-y-1">
+            <p class="text-slate-600 dark:text-slate-400">Your choice: <span class="font-bold ${isCorrect ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}">${escapeHtml(optUser)}</span></p>
+            ${!isCorrect ? `<p class="text-slate-600 dark:text-slate-400">Correct answer: <span class="font-bold text-emerald-700 dark:text-emerald-300">${escapeHtml(optCorrect)}</span></p>` : ''}
+          </div>
+          ${q.explanation ? `<p class="text-[11px] text-slate-500 italic mt-1">Explanation: ${escapeHtml(q.explanation)}</p>` : ''}
+        </div>
+      `;
+    }).join('');
+  }
+
+  setupQuizEventListeners() {
+    document.getElementById('quiz-submit-btn')?.addEventListener('click', () => this.submitQuizAnswer());
+    document.getElementById('quiz-next-btn')?.addEventListener('click', () => this.handleQuizNextOrFinish());
+    document.getElementById('quiz-prev-btn')?.addEventListener('click', () => this.prevQuizQuestion());
+    document.getElementById('retake-quiz-btn')?.addEventListener('click', () => this.retakeQuiz());
+    document.getElementById('quiz-review-btn')?.addEventListener('click', () => this.reviewQuizAnswers());
+    document.getElementById('review-back-to-results-btn')?.addEventListener('click', () => this.backToQuizResults());
+  }
+
+  backToQuizResults() {
+    document.getElementById('quiz-review-card')?.classList.add('hidden');
+    document.getElementById('quiz-results')?.classList.remove('hidden');
+  }
+
+  // Exports
+  exportAnkiTopic() {
+    const topic = this.data.currentTopic;
+    if (!topic) return;
+
+    const slot = topic.contentSlots?.flashcards;
+    const cards = slot?.content?.flashcards || (Array.isArray(slot?.content) ? slot.content : []);
+
+    if (cards.length === 0) {
+      this.showToast('No flashcards available to export for this topic', 'error');
+      return;
+    }
+
+    // Generate TSV for Anki
+    const tsvContent = cards.map(c => `${(c.front || c.question || '').replace(/\t/g, ' ')}\t${(c.back || c.answer || '').replace(/\t/g, ' ')}`).join('\n');
+
+    const blob = new Blob([tsvContent], { type: 'text/tab-separated-values;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `${topic.name.replace(/[^a-z0-9]/gi, '_')}_anki.tsv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    this.showToast('Anki deck exported (.tsv)!', 'success');
+  }
+
+  exportCourseMarkdown() {
+    const course = this.data.currentCourse;
+    if (!course) return;
+
+    let md = `# Course: ${course.name}\n\n`;
+    md += `${course.description || ''}\n\n`;
+    md += `---\n\n`;
+
+    (course.topics || []).forEach((topic, idx) => {
+      md += `## Topic ${idx + 1}: ${topic.name} (${topic.difficulty || 'Medium'})\n\n`;
+
+      if (topic.contentSlots?.summary?.content) {
+        md += `### Summary\n\n${topic.contentSlots.summary.content}\n\n`;
+      }
+      if (topic.contentSlots?.explainer?.content) {
+        md += `### Concept Explainer\n\n${topic.contentSlots.explainer.content}\n\n`;
+      }
+      if (topic.contentSlots?.flashcards?.content) {
+        const cards = topic.contentSlots.flashcards.content.flashcards || [];
+        if (cards.length > 0) {
+          md += `### Flashcards\n\n`;
+          cards.forEach((c, ci) => {
+            md += `- **Q${ci + 1}**: ${c.front}\n  - **A**: ${c.back}\n`;
+          });
+          md += `\n`;
+        }
+      }
+      md += `---\n\n`;
+    });
+
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `${course.name.replace(/[^a-z0-9]/gi, '_')}_study_guide.md`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    this.showToast('Course study guide exported (.md)!', 'success');
+  }
+
+  // Prompts & Modals
+  getStructurePrompt() {
+    const prefs = this.data.settings?.personalization || this._getDefaultPrefs();
+    return `You are a world-class educational designer and subject matter tutor.
+Analyze the course title and description provided.
+Break down this curriculum into 5 to 10 sequential, bite-sized topics.
+Strict difficulty setting: ${prefs.difficulty}.
+
+Please format your response EXACTLY like this for each topic:
+
+TOPIC_START
+TOPIC_NAME: [Clear topic title]
+DIFFICULTY: [Beginner/Intermediate/Advanced]
+ESTIMATED_TIME: [Estimated study minutes, e.g. 15]
+TOPIC_END
+
+Do not include conversational chatter or filler text. Output the topics directly.`;
+  }
+
+  getContentPrompt(type, topic) {
+    const prefs = this.data.settings?.personalization || this._getDefaultPrefs();
+    const courseName = this.data.currentCourse?.name || 'Subject';
+    const topicName = topic?.name || 'Topic';
+
+    const pDepth = `Depth level: ${prefs.depth}.`;
+    const pEx = `Examples: ${prefs.examples}.`;
+    const pRig = `Rigor: ${prefs.rigor}.`;
+    const pDiff = `Target Difficulty: ${topic?.difficulty || prefs.difficulty}.`;
+
+    switch (type) {
+      case 'summary':
+        return `You are an expert tutor creating a comprehensive study guide.
+Course: "${courseName}"
+Topic: "${topicName}"
+Parameters: ${pDepth} ${pEx} ${pRig} ${pDiff}
+
+Write a comprehensive, crystal-clear study summary in clean Markdown:
+- # Overview
+- ## Core Principles & Mechanisms
+- ## Real-World Examples & Demonstrations
+- ## Key Formulas, Definitions & Terminology
+- ## Common Pitfalls & Edge Cases
+- ## Quick Review Checklist
+
+Make it direct, dense with insight, and visually organized with bold terms and lists.`;
+
+      case 'explainer':
+        return `You are Feynman-style master teacher renowned for explaining difficult ideas simply.
+Course: "${courseName}"
+Topic: "${topicName}"
+Parameters: ${pDepth} ${pRig}
+
+Deliver an intuitive deep-dive concept explainer in clean Markdown:
+1. The 1-Sentence Core Intuition
+2. The Everyday Analogy (relate this to familiar physical intuition)
+3. Step-by-Step Breakdown (how and why it works from first principles)
+4. Why this matters in practice
+5. A thought experiment or 'What if?' scenario testing the boundary conditions.`;
+
+      case 'flashcards':
+        return `You are a cognitive science expert specializing in spaced repetition (Anki/SuperMemo).
+Generate 10 high-impact, atomic flashcards for:
+Course: "${courseName}"
+Topic: "${topicName}"
+Difficulty: ${topic?.difficulty || prefs.difficulty}
+
+Rules:
+- Minimum information principle: Each card must test ONE single concept, definition, mechanism, or distinction.
+- Front must be an active recall question or prompt.
+- Back must be a concise, direct answer.
+
+Respond ONLY with valid JSON in this exact structure:
+\`\`\`json
+{
+  "flashcards": [
+    {
+      "front": "What is ...?",
+      "back": "..."
+    }
+  ]
+}
+\`\`\``;
+
+      case 'quiz':
+        return `You are an exam designer creating a high-yield assessment quiz.
+Course: "${courseName}"
+Topic: "${topicName}"
+Difficulty: ${topic?.difficulty || prefs.difficulty}
+
+Create a rigorous 10-question multiple choice quiz.
+Each question must test conceptual understanding or problem solving, not pure trivia.
+Provide 4 options (A, B, C, D) and a detailed explanation for why the correct answer is right and distractors are wrong.
+
+Respond ONLY with valid JSON in this exact structure:
+\`\`\`json
+{
+  "questions": [
+    {
+      "question": "Clear question text?",
+      "options": ["Option A", "Option B", "Option C", "Option D"],
+      "correctAnswer": 0,
+      "explanation": "Detailed explanation of the solution..."
+    }
+  ]
+}
+\`\`\`
+Note: correctAnswer is the 0-indexed number (0 for first option, 1 for second, 2 for third, 3 for fourth).`;
+
+      default:
+        return `Generate comprehensive educational study material for ${topicName}.`;
+    }
+  }
+
+  showPromptModal(title, prompt) {
+    const modal = document.getElementById('prompt-modal');
+    const titleEl = document.getElementById('prompt-modal-title');
+    const textEl = document.getElementById('prompt-text');
+
+    if (titleEl) titleEl.textContent = title;
+    if (textEl) textEl.value = prompt;
+    modal?.classList.remove('hidden');
+  }
+
+  hidePromptModal() {
+    const modal = document.getElementById('prompt-modal');
+    modal?.classList.add('hidden');
+  }
+
+  copyPromptToClipboard() {
+    const textEl = document.getElementById('prompt-text');
+    if (!textEl) return;
+
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(textEl.value)
+        .then(() => {
+          this.showToast('Prompt copied to clipboard! Paste it into Gemini or ChatGPT. 📋', 'success');
+          this.hidePromptModal();
+        })
+        .catch(() => {
+          this.fallbackCopyPrompt(textEl.value);
+          this.hidePromptModal();
+        });
+    } else {
+      this.fallbackCopyPrompt(textEl.value);
+      this.hidePromptModal();
+    }
+  }
+
+  // Study View (Smart Queue)
+  loadStudyView() {
+    const container = document.getElementById('study-queue');
+    if (!container) return;
+
+    const dueCards = [];
+    const unstudiedSlots = [];
+    const today = this._today();
+
+    (this.data.courses || []).forEach(course => {
+      (course.topics || []).forEach(topic => {
+        // 1. Check SRS Flashcards due
+        const srsSlot = topic.contentSlots?.flashcards;
+        if (srsSlot?.content && srsSlot.srs?.cards) {
+          const cardsMap = srsSlot.srs.cards;
+          let countDue = 0;
+          for (const cid in cardsMap) {
+            if (cardsMap[cid].due <= today) countDue++;
+          }
+          if (countDue > 0) {
+            dueCards.push({
+              course,
+              topic,
+              dueCount: countDue
+            });
+          }
+        }
+
+        // 2. Check unstudied or incomplete materials
+        ['summary', 'explainer', 'flashcards', 'quiz'].forEach(type => {
+          const slot = topic.contentSlots?.[type];
+          if (slot?.content && !slot.completed) {
+            unstudiedSlots.push({ course, topic, type });
+          }
+        });
       });
     });
 
-    // Course search input
-    document.getElementById('course-search-input')?.addEventListener('input', () => {
-      this.renderCourseList();
-    });
+    if (dueCards.length === 0 && unstudiedSlots.length === 0) {
+      container.innerHTML = `
+        <div class="text-center py-12 px-4 bg-slate-50 dark:bg-slate-850 rounded-3xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400 space-y-2">
+          <span class="text-4xl block mb-2">🎉</span>
+          <h3 class="font-bold text-slate-800 dark:text-slate-200 text-sm">You are all caught up!</h3>
+          <p class="text-xs">No flashcard reviews are due today, and all current modules have been reviewed.</p>
+          <button onclick="window.app.showView('courses')" class="mt-4 px-4 py-2 bg-primary-600 text-white rounded-xl text-xs font-bold hover:bg-primary-700 transition">
+            Explore Courses
+          </button>
+        </div>
+      `;
+      return;
+    }
 
-    // Paste modal submit
-    document.getElementById('paste-modal-submit')?.addEventListener('click', () => {
-      this.handlePasteModalSubmit();
-    });
+    let html = '';
 
-    // Complete current content button
-    document.getElementById('complete-content-btn')?.addEventListener('click', () => {
-      this.markCurrentContentComplete();
-    });
+    if (dueCards.length > 0) {
+      html += `<h3 class="font-bold text-xs uppercase tracking-wider text-rose-600 dark:text-rose-400 px-1 mb-2">🔥 Due Spaced Repetition (SRS)</h3>`;
+      dueCards.forEach(item => {
+        html += `
+          <div class="bg-white dark:bg-slate-850 border border-rose-200 dark:border-rose-950 p-4 rounded-2xl flex items-center justify-between shadow-sm">
+            <div>
+              <span class="text-[10px] font-bold uppercase tracking-wider text-rose-600">${escapeHtml(item.course.name)}</span>
+              <h4 class="font-bold text-slate-900 dark:text-white text-sm">${escapeHtml(item.topic.name)}</h4>
+              <p class="text-xs text-slate-500">${item.dueCount} flashcard reviews due today</p>
+            </div>
+            <button onclick="window.app.openFlashcardsStudy('${item.topic.id}')" class="bg-rose-600 hover:bg-rose-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold shadow-md transition">
+              Review Now 🃏
+            </button>
+          </div>
+        `;
+      });
+    }
 
-    // Content TTS button
-    document.getElementById('content-tts-btn')?.addEventListener('click', () => {
-      this.toggleTTS();
-    });
+    if (unstudiedSlots.length > 0) {
+      html += `<h3 class="font-bold text-xs uppercase tracking-wider text-slate-600 dark:text-slate-400 px-1 mt-4 mb-2">📖 Modules Ready to Study</h3>`;
+      unstudiedSlots.forEach(item => {
+        html += `
+          <div class="bg-white dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-sm">
+            <div>
+              <span class="text-[10px] font-bold uppercase tracking-wider text-primary-600">${escapeHtml(item.course.name)}</span>
+              <h4 class="font-bold text-slate-900 dark:text-white text-sm">${escapeHtml(item.topic.name)}</h4>
+              <p class="text-xs text-slate-500 capitalize">${item.type} module</p>
+            </div>
+            <button onclick="window.app.openContent('${item.type}', '${item.topic.id}')" class="bg-primary-600 hover:bg-primary-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition">
+              Study
+            </button>
+          </div>
+        `;
+      });
+    }
 
-    // Content Export Markdown button
-    document.getElementById('content-export-btn')?.addEventListener('click', () => {
-      this.exportCurrentContentMarkdown();
-    });
+    container.innerHTML = html;
+  }
 
-    // Quiz controls
-    document.getElementById('quiz-prev-btn')?.addEventListener('click', () => {
-      this.prevQuizQuestion();
-    });
+  markContentCompleted(type, topicId) {
+    const topic = this.findTopicById(this.data.currentCourse, topicId);
+    if (!topic?.contentSlots?.[type]) return;
 
-    // Settings save & reset
-    document.getElementById('save-preferences-btn')?.addEventListener('click', () => {
-      this.savePreferencesFromUI();
-    });
-    document.getElementById('reset-preferences-btn')?.addEventListener('click', () => {
-      this.resetPreferences();
-    });
+    topic.contentSlots[type].completed = true;
+    topic.contentSlots[type].lastStudied = new Date().toISOString();
+    this.recordActivity();
+    this.saveData(false);
+    playSoundChime('success');
+    this.showToast(`Marked ${this.capitalize(type)} as completed!`, 'success');
 
-    // Settings export & import data
-    document.getElementById('export-data-btn')?.addEventListener('click', () => {
-      this.exportAllData();
-    });
-    document.getElementById('import-data-btn')?.addEventListener('click', () => {
-      this.triggerImportData();
-    });
+    if (this.data.currentView === 'topic-detail') this.loadTopicDetail();
+    if (this.data.currentView === 'study') this.loadStudyView();
+  }
 
-    // Flashcard interaction listeners
-    document.getElementById('fc-card')?.addEventListener('click', () => {
-      this.flipFlashcard();
-    });
-    document.getElementById('fc-rate-easy')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.rateFlashcard('easy');
-    });
-    document.getElementById('fc-rate-good')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.rateFlashcard('good');
-    });
-    document.getElementById('fc-rate-hard')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.rateFlashcard('hard');
-    });
-    document.getElementById('fc-prev-btn')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.prevFlashcard();
-    });
-    document.getElementById('fc-next-btn')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.nextFlashcard();
-    });
-    document.getElementById('fc-export-anki-btn')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.exportAnkiDeck();
-    });
+  unmarkContentCompleted(type, topicId) {
+    const topic = this.findTopicById(this.data.currentCourse, topicId);
+    if (!topic?.contentSlots?.[type]) return;
 
-    // Pomodoro timer buttons
-    document.getElementById('pomo-toggle-btn')?.addEventListener('click', () => {
-      this.togglePomodoro();
-    });
-    document.getElementById('pomo-reset-btn')?.addEventListener('click', () => {
-      this.resetPomodoro();
-    });
-    document.getElementById('pomo-mode-work')?.addEventListener('click', () => {
-      this.setPomodoroMode('work');
-    });
-    document.getElementById('pomo-mode-shortBreak')?.addEventListener('click', () => {
-      this.setPomodoroMode('shortBreak');
-    });
-    document.getElementById('pomo-mode-longBreak')?.addEventListener('click', () => {
-      this.setPomodoroMode('longBreak');
-    });
+    topic.contentSlots[type].completed = false;
+    this.saveData(false);
+    this.showToast(`Unmarked ${this.capitalize(type)}.`, 'info');
 
-    // Keyboard navigation shortcuts
-    window.addEventListener('keydown', (e) => {
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (this.data.currentView === 'topic-detail') this.loadTopicDetail();
+    if (this.data.currentView === 'study') this.loadStudyView();
+  }
 
-      if (this.data.currentView === 'flashcards') {
-        if (e.code === 'Space') {
-          e.preventDefault();
-          this.flipFlashcard();
-        } else if (e.code === 'ArrowLeft') {
-          this.prevFlashcard();
-        } else if (e.code === 'ArrowRight') {
-          this.nextFlashcard();
-        } else if (e.key === '1') {
-          this.rateFlashcard('hard');
-        } else if (e.key === '2') {
-          this.rateFlashcard('good');
-        } else if (e.key === '3') {
-          this.rateFlashcard('easy');
+  // Utilities
+  renderMarkdown(md) {
+    if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+      const rawHtml = marked.parse(md || '');
+      return DOMPurify.sanitize(rawHtml);
+    }
+    return `<pre class="whitespace-pre-wrap font-sans text-xs">${escapeHtml(md)}</pre>`;
+  }
+
+  showToast(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+
+    const toast = document.createElement('div');
+    const bg = type === 'success' ? 'bg-emerald-600 text-white' :
+               type === 'error' ? 'bg-rose-600 text-white' :
+               'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900';
+
+    toast.className = `${bg} px-4 py-2.5 rounded-2xl shadow-xl text-xs font-bold flex items-center space-x-2 transition-all transform duration-200 pointer-events-auto max-w-xs`;
+    toast.innerHTML = `
+      <span>${type === 'success' ? '✓' : (type === 'error' ? '⚠' : 'ℹ')}</span>
+      <span class="flex-1">${escapeHtml(message)}</span>
+    `;
+
+    container.appendChild(toast);
+
+    setTimeout(() => {
+      toast.classList.add('opacity-0', 'translate-y-2');
+      setTimeout(() => toast.remove(), 250);
+    }, 3200);
+  }
+
+  capitalize(str) {
+    if (!str) return '';
+    return str.charAt(0).toUpperCase() + str.slice(1);
+  }
+
+  // Backup & Import
+  exportData() {
+    const jsonStr = JSON.stringify(this.data, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `study_buddy_backup_${this._today()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    this.showToast('Backup JSON downloaded!', 'success');
+  }
+
+  importData() {
+    document.getElementById('import-file-input')?.click();
+  }
+
+  handleImportFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const imported = JSON.parse(e.target.result);
+        if (!imported || typeof imported !== 'object') throw new Error('Invalid JSON');
+
+        if (!confirm('This will replace your current study data. Continue?')) {
+          event.target.value = '';
+          return;
         }
+
+        this.data = imported;
+        this.migrateDataSchema();
+        this.saveData(false);
+        this.initDarkModeState();
+        this.checkAndUpdateStreak();
+        this.updateDashboard();
+        this.showView('dashboard');
+        playSoundChime('success');
+        this.showToast('Backup restored successfully!', 'success');
+      } catch (err) {
+        this.showToast('Failed to import backup: ' + err.message, 'error');
       }
-    });
+      event.target.value = '';
+    };
+    reader.readAsText(file);
+  }
+
+  clearAllData() {
+    if (!confirm('Are you ABSOLUTELY sure? This will delete all courses, topics, and study progress.')) return;
+    if (!confirm('Second confirmation: All data will be permanently wiped.')) return;
+
+    localStorage.removeItem('studyBuddyData');
+    localStorage.removeItem('theme');
+    location.reload();
   }
 }
 
 // Global bootstrap
-document.addEventListener('DOMContentLoaded', () => {
-  window.app = new StudyBuddyApp();
+function initApp() {
+  if (!window.app) {
+    window.app = new StudyBuddyApp();
+    window.appInstance = window.app;
+  }
+  return window.app;
+}
+
+// Attach listener and run immediate fallback
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
+}
+
+// Global property alias
+var app = window.app;
+Object.defineProperty(window, 'app', {
+  get: () => window.appInstance,
+  set: (val) => { window.appInstance = val; }
 });
 
-// Helper global methods for direct inline onclick events
+// View routing helper for inline onclicks
 function showView(viewName) {
   if (window.app) window.app.showView(viewName);
-}
-
-function openCreateCourseModal() {
-  if (window.app) window.app.openCreateCourseModal();
-}
-
-function closeCreateCourseModal() {
-  if (window.app) window.app.closeCreateCourseModal();
-}
-
-function submitCreateCourse() {
-  if (window.app) window.app.handleCreateCourseSubmit();
-}
-
-function closePasteModal() {
-  if (window.app) window.app.closePasteModal();
 }
 
 function copyPrompt(type) {
@@ -2255,7 +2589,7 @@ function copyPrompt(type) {
 
   if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(prompt)
-      .then(() => window.app.showToast('Prompt copied to clipboard!', 'success'))
+      .then(() => window.app.showToast('Prompt copied to clipboard! Paste it into Gemini or ChatGPT. 📋', 'success'))
       .catch(() => fallbackCopyPrompt(prompt));
   } else {
     fallbackCopyPrompt(prompt);
