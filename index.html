@@ -69,7 +69,10 @@
       }
     }
   </script>
-
+<!-- KaTeX for Rich Math Formula Rendering ($...$ and $$...$$) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
   <!-- Stylesheet -->
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -640,15 +643,15 @@
         <div class="p-4 perspective-1000">
           <div id="flashcard-card-inner" class="relative w-full h-60 rounded-2xl transform-style-3d cursor-pointer select-none">
             <!-- Front Face -->
-            <div id="flashcard-front-face" class="absolute inset-0 w-full h-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-850 p-6 flex flex-col justify-between items-center text-center backface-hidden shadow-inner">
+            <div id="flashcard-front-face" class="absolute inset-0 w-full h-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-850 p-6 flex flex-col justify-between items-center text-center backface-hidden shadow-inner">
               <span class="text-[10px] uppercase tracking-wider font-extrabold text-primary-600 dark:text-primary-400">Front (Tap to flip)</span>
-              <div id="flash-front" class="text-base font-bold text-slate-900 dark:text-white my-auto leading-relaxed"></div>
+              <div id="flash-front" class="text-base font-bold text-slate-900 dark:text-white my-auto leading-relaxed overflow-y-auto max-h-36 w-full px-2"></div>
               <span class="text-[10px] text-slate-400 font-medium">Press Space to flip</span>
             </div>
             <!-- Back Face (rotated 180deg) -->
-            <div id="flashcard-back-face" class="absolute inset-0 w-full h-full rounded-2xl border border-primary-200 dark:border-primary-900/40 bg-indigo-50/50 dark:bg-slate-800 p-6 flex flex-col justify-between items-center text-center backface-hidden rotate-y-180 shadow-inner">
+            <div id="flashcard-back-face" class="absolute inset-0 w-full h-full rounded-2xl border border-primary-200 dark:border-primary-900/60 bg-white dark:bg-slate-850 p-6 flex flex-col justify-between items-center text-center backface-hidden rotate-y-180 shadow-inner">
               <span class="text-[10px] uppercase tracking-wider font-extrabold text-emerald-600 dark:text-emerald-400">Answer</span>
-              <div id="flash-back" class="text-sm font-semibold text-slate-800 dark:text-slate-100 my-auto leading-relaxed whitespace-pre-wrap"></div>
+              <div id="flash-back" class="text-sm font-semibold text-slate-800 dark:text-slate-100 my-auto leading-relaxed whitespace-pre-wrap overflow-y-auto max-h-36 w-full px-2"></div>
               <span class="text-[10px] text-slate-400 font-medium">Rate below to schedule next review</span>
             </div>
           </div>
