@@ -45,14 +45,16 @@ html.dark ::-webkit-scrollbar-thumb {
   background: #334155;
 }
 
-/* Inputs & Form Elements (Dark mode fix) */
-input, textarea, select {
+/* Inputs & Form Elements (Dark mode fix - preserve radio/checkbox/range styles) */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="submit"]):not([type="button"]):not([type="file"]),
+textarea,
+select {
   background-color: #ffffff;
   color: #0f172a;
   border-color: #cbd5e1;
 }
 
-html.dark input,
+html.dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="submit"]):not([type="button"]):not([type="file"]),
 html.dark textarea,
 html.dark select {
   background-color: #1e293b !important;
@@ -99,6 +101,22 @@ html.dark .prose code {
   border-radius: 0.5rem;
   overflow-x: auto;
 }
+.prose pre code {
+  background-color: transparent !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  color: inherit;
+}
+.prose blockquote {
+  border-left: 3px solid #cbd5e1;
+  padding-left: 1rem;
+  font-style: italic;
+  color: #64748b;
+}
+html.dark .prose blockquote {
+  border-left-color: #475569;
+  color: #94a3b8;
+}
 .prose table {
   width: 100%;
   border-collapse: collapse;
@@ -110,4 +128,7 @@ html.dark .prose code {
 }
 html.dark .prose th, html.dark .prose td {
   border-color: #334155;
+}
+html.dark .prose th {
+  background-color: #1e293b;
 }
