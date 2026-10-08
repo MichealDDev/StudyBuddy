@@ -1,4 +1,4 @@
-// app.js - Production Ready
+// app.js - Production Ready & Refined
 
 // Utility: HTML Escaper
 function escapeHtml(str) {
@@ -11,8 +11,15 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
+// Utility: Clean placeholder brackets e.g. "[Cell Biology]" -> "Cell Biology"
+function cleanBrackets(str) {
+  if (!str) return '';
+  return String(str).replace(/^\[(.*)\]$/, '$1').trim();
+}
+
 // Utility: Extract the first fenced JSON code block or parse direct JSON
 function extractJsonFromText(text) {
+  if (!text) return null;
   try {
     const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
     const jsonString = codeBlockMatch ? codeBlockMatch[1] : text.trim();
@@ -51,6 +58,8 @@ class StudyBuddyApp {
     this.currentQuiz = null;
     this.menuOpen = false;
     this.quizMasteryThreshold = 70; // auto-complete quiz at or above this %
+    this._flash = null;
+    this._flashWired = false;
 
     this.init();
   }
@@ -58,11 +67,37 @@ class StudyBuddyApp {
   init() {
     this.loadData();
     this.migrateDataSchema();
+    this.initDarkModeState();
     this.checkAndUpdateStreak();
-    this.applyDarkMode(this.data.settings.darkMode);
     this.setupEventListeners();
     this.updateDashboard();
     this.showView('dashboard');
+  }
+
+  // Dark Mode Initialization & Sync
+  initDarkModeState() {
+    const storedTheme = localStorage.getItem('theme');
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    
+    // If settings has darkMode explicitly saved as boolean, honor it; otherwise detect
+    if (typeof this.data.settings?.darkMode === 'boolean') {
+      this.applyDarkMode(this.data.settings.darkMode);
+    } else {
+      const isDark = storedTheme === 'dark' || (!storedTheme && prefersDark);
+      this.data.settings.darkMode = isDark;
+      this.applyDarkMode(isDark);
+    }
+  }
+
+  applyDarkMode(enabled) {
+    document.documentElement.classList.toggle('dark', enabled);
+    try {
+      localStorage.setItem('theme', enabled ? 'dark' : 'light');
+    } catch { }
+    const darkToggle = document.getElementById('dark-mode-toggle');
+    if (darkToggle && darkToggle.checked !== enabled) {
+      darkToggle.checked = enabled;
+    }
   }
 
   // Persistence
@@ -125,7 +160,24 @@ class StudyBuddyApp {
     }
   }
 
-  // Streak tracking
+  // Streak tracking (using local calendar day)
+  _today() {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  _addDays(n) {
+    const d = new Date();
+    d.setDate(d.getDate() + n);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
   checkAndUpdateStreak() {
     const today = this._today();
     const last = this.data.stats.lastActiveDate;
@@ -137,13 +189,13 @@ class StudyBuddyApp {
       return;
     }
 
-    if (last === today) return; // Already counted today
+    if (last === today) return; // Already recorded today
 
     const yesterday = this._addDays(-1);
     if (last === yesterday) {
       this.data.stats.streak += 1;
     } else {
-      this.data.stats.streak = 1; // Broken streak
+      this.data.stats.streak = 1; // Streak reset
     }
     this.data.stats.lastActiveDate = today;
     this.saveData(false);
@@ -169,6 +221,9 @@ class StudyBuddyApp {
   syncPreferencesUI() {
     const pp = this.data.settings.personalization || this._getDefaultPrefs();
     const el = (id) => document.getElementById(id);
+
+    const darkToggle = el('dark-mode-toggle');
+    if (darkToggle) darkToggle.checked = !!this.data.settings.darkMode;
 
     const depthEl = el('pref-depth');
     const exEl = el('pref-examples');
@@ -318,7 +373,7 @@ class StudyBuddyApp {
         this.data.settings.darkMode = enabled;
         this.applyDarkMode(enabled);
         this.saveData(false);
-        this.showToast(`Dark mode ${enabled ? 'enabled' : 'disabled'}`, 'success');
+        this.showToast(`Dark mode ${enabled ? 'enabled' : 'disabled'}`, 'info');
       });
     }
 
@@ -333,11 +388,6 @@ class StudyBuddyApp {
     // Quiz
     this.setupQuizEventListeners();
     this._initPreferenceControls();
-  }
-
-  applyDarkMode(enabled) {
-    document.documentElement.classList.toggle('dark', enabled);
-    try { localStorage.setItem('theme', enabled ? 'dark' : 'light'); } catch { }
   }
 
   toggleHeaderMenu() {
@@ -564,7 +614,7 @@ class StudyBuddyApp {
     } else {
       const recentItems = this.data.courses.slice(-3).reverse();
       container.innerHTML = recentItems.map(course => `
-        <div class="bg-white border border-gray-200 dark:border-gray-700 p-4 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-4 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors"
              onclick="app.openCourse('${course.id}')">
           <h4 class="font-medium text-gray-800 dark:text-gray-200">${escapeHtml(course.name)}</h4>
           <p class="text-sm text-gray-600 dark:text-gray-400">${course.topics?.length || 0} topics</p>
@@ -681,7 +731,7 @@ class StudyBuddyApp {
       `;
     } else {
       container.innerHTML = this.data.courses.map(course => `
-        <div class="bg-white border border-gray-200 dark:border-gray-700 p-4 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-4 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors"
              onclick="app.openCourse('${course.id}')">
           <div class="flex items-start justify-between">
             <div class="flex-1 pr-2">
@@ -696,7 +746,7 @@ class StudyBuddyApp {
               ${course.structureAnalyzed
                 ? '<span class="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300 px-2 py-1 rounded-full text-xs">Structured</span>'
                 : '<span class="bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300 px-2 py-1 rounded-full text-xs">Setup Required</span>'}
-              <button class="text-red-600 text-xs hover:text-red-700"
+              <button class="text-red-600 dark:text-red-400 text-xs hover:underline"
                       onclick="app.confirmDeleteCourse('${course.id}', event)">
                 Delete
               </button>
@@ -708,13 +758,18 @@ class StudyBuddyApp {
   }
 
   loadCourseDetail(data) {
-    let course = this.data.currentCourse;
-    if (data?.courseId) {
-      course = this.findCourseById(data.courseId);
+    const courseId = data?.courseId || this.data.currentCourse?.id;
+    let course = this.findCourseById(courseId);
+    if (course) {
       this.data.currentCourse = course;
+    } else {
+      course = this.data.currentCourse;
     }
 
-    if (!course) return;
+    if (!course) {
+      this.showView('courses');
+      return;
+    }
 
     if (!course.structureAnalyzed) {
       document.getElementById('structure-prompt-card').style.display = 'block';
@@ -780,9 +835,9 @@ class StudyBuddyApp {
         if (topicMatch) {
           currentTopic = {
             id: Date.now().toString() + Math.random().toString(36).slice(2, 9),
-            name: topicMatch[1].trim(),
-            difficulty: this.extractValue(line, 'DIFFICULTY') || 'Medium',
-            category: this.extractValue(line, 'CATEGORY') || 'General',
+            name: cleanBrackets(topicMatch[1]),
+            difficulty: cleanBrackets(this.extractValue(line, 'DIFFICULTY')) || 'Medium',
+            category: cleanBrackets(this.extractValue(line, 'CATEGORY')) || 'General',
             subtopics: [],
             contentSlots: this.createEmptyContentSlots()
           };
@@ -793,10 +848,14 @@ class StudyBuddyApp {
       if (currentTopic && line.includes('SUBTOPIC:')) {
         const subtopicMatch = line.match(/SUBTOPIC:\s*(.+?)(?:\s*##|$)/);
         if (subtopicMatch) {
+          const rawConcepts = this.extractValue(line, 'CONCEPTS');
+          const cleanConcepts = rawConcepts
+            ? cleanBrackets(rawConcepts).split(',').map(c => cleanBrackets(c.trim())).filter(Boolean)
+            : [];
           currentTopic.subtopics.push({
             id: Date.now().toString() + Math.random().toString(36).slice(2, 9),
-            name: subtopicMatch[1].trim(),
-            concepts: this.extractValue(line, 'CONCEPTS')?.split(',').map(c => c.trim()) || []
+            name: cleanBrackets(subtopicMatch[1]),
+            concepts: cleanConcepts
           });
         }
       }
@@ -810,7 +869,7 @@ class StudyBuddyApp {
     if (topics.length === 0) {
       for (let line of lines) {
         if (/^#{2,3}\s+/.test(line)) {
-          const topicName = line.replace(/^#+\s*/, '').trim();
+          const topicName = cleanBrackets(line.replace(/^#+\s*/, '').trim());
           if (topicName && !topics.find(t => t.name === topicName)) {
             topics.push({
               id: Date.now().toString() + Math.random().toString(36).slice(2, 9),
@@ -867,7 +926,7 @@ class StudyBuddyApp {
       const progress = Math.round((completed / Math.max(total, 1)) * 100);
 
       return `
-        <div class="bg-white border border-gray-200 dark:border-gray-700 p-4 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-4 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors"
              onclick="app.openTopic('${topic.id}')">
           <div class="flex items-start justify-between mb-2">
             <h4 class="font-semibold text-gray-800 dark:text-gray-100">${escapeHtml(topic.name)}</h4>
@@ -892,15 +951,16 @@ class StudyBuddyApp {
   }
 
   loadTopicDetail(data) {
-    let topic = this.data.currentTopic;
     const course = this.data.currentCourse;
+    const topicId = data?.topicId || this.data.currentTopic?.id;
+    let topic = this.findTopicById(course, topicId) || this.data.currentTopic;
 
-    if (data?.topicId && course) {
-      topic = this.findTopicById(course, data.topicId);
+    if (topic) {
       this.data.currentTopic = topic;
+    } else {
+      this.showView('courses');
+      return;
     }
-
-    if (!topic) return;
 
     document.getElementById('topic-title').textContent = topic.name;
     document.getElementById('topic-difficulty').textContent = topic.difficulty;
@@ -946,7 +1006,7 @@ class StudyBuddyApp {
               🎯 Take Quiz
             </button>
           ` : `
-            <button onclick="app.openContent('${type}', '${topic.id}')" class="flex-1 bg-gray-600 text-white p-2 rounded-lg text-sm font-medium hover:bg-gray-700 transition-colors">
+            <button onclick="app.openContent('${type}', '${topic.id}')" class="flex-1 bg-gray-600 dark:bg-gray-700 text-white p-2 rounded-lg text-sm font-medium hover:bg-gray-700 dark:hover:bg-gray-600 transition-colors">
               👁️ View Content
             </button>
           `}
@@ -960,7 +1020,7 @@ class StudyBuddyApp {
       `;
 
       return `
-        <div class="bg-white border border-gray-200 dark:border-gray-700 p-4 rounded-lg">
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-4 rounded-lg">
           <div class="flex items-center justify-between mb-2">
             <div class="flex items-center space-x-2">
               <span class="text-lg">${t.icon}</span>
@@ -977,12 +1037,16 @@ class StudyBuddyApp {
     }).join('');
   }
 
-  // Content
+  // Content View
   loadContentView(data) {
-    const { type, topicId } = data || {};
+    const type = data?.type || this.data.currentContent?.type;
+    const topicId = data?.topicId || this.data.currentContent?.topicId || this.data.currentTopic?.id;
     const course = this.data.currentCourse;
     const topic = this.findTopicById(course, topicId);
-    if (!topic) return;
+    if (!topic || !type) {
+      this.goBack();
+      return;
+    }
 
     this.data.currentTopic = topic;
     this.data.currentContent = { type, topicId };
@@ -995,11 +1059,11 @@ class StudyBuddyApp {
       practice: 'Practice Problems',
       review: 'Topic Review'
     };
-    document.getElementById('content-title').textContent = map[type] || 'Content';
+    document.getElementById('content-title').textContent = map[type] || this.capitalize(type);
     document.getElementById('content-topic').textContent = topic.name;
 
     const slot = topic.contentSlots[type];
-    const isEmpty = slot.status === 'empty';
+    const isEmpty = !slot || slot.status === 'empty';
 
     if (isEmpty) {
       document.getElementById('content-actions').style.display = 'block';
@@ -1042,25 +1106,38 @@ class StudyBuddyApp {
     }
 
     if (type === 'quiz') {
-      if (maybeJson && (maybeJson.schema_version === 'quiz_mcq_v1' || Array.isArray(maybeJson.items))) {
-        const questions = (maybeJson.items || []).map((item, index) => {
-          const options = item.options || [];
-          const correctIdx = options.findIndex(o => o.isCorrect === true);
+      const items = maybeJson?.items || maybeJson?.questions;
+      if (maybeJson && (maybeJson.schema_version === 'quiz_mcq_v1' || Array.isArray(items))) {
+        const questions = (items || []).map((item, index) => {
+          const rawOptions = item.options || [];
+          let options = [];
+          let correctIdx = item.correctAnswer;
           const fb = {};
-          options.forEach((o, i) => fb[i] = o.feedback || '');
+
+          if (rawOptions.length > 0 && typeof rawOptions[0] === 'object' && rawOptions[0] !== null) {
+            options = rawOptions.map(o => o.text || '');
+            correctIdx = rawOptions.findIndex(o => o.isCorrect === true);
+            rawOptions.forEach((o, i) => { fb[i] = o.feedback || ''; });
+          } else {
+            options = rawOptions.map(String);
+            if (typeof item.feedback === 'object' && item.feedback !== null) {
+              Object.assign(fb, item.feedback);
+            }
+          }
+
           return {
             id: item.id || index + 1,
             text: item.stem || item.text || '',
             type: 'multiple_choice',
             difficulty: item.difficulty || 'medium',
-            options: options.map(o => o.text),
-            correctAnswer: correctIdx >= 0 ? correctIdx : null,
+            options,
+            correctAnswer: typeof correctIdx === 'number' && correctIdx >= 0 ? correctIdx : 0,
             feedback: fb,
             citation_ids: item.citation_ids || []
           };
-        }).filter(q => q.options?.length === 4 && q.correctAnswer !== null);
+        }).filter(q => q.options.length === 4 && typeof q.correctAnswer === 'number');
 
-        if (questions.length === 0) return { error: 'Quiz JSON parsed but no valid items found. Ensure 4 options with one isCorrect=true and feedback.' };
+        if (questions.length === 0) return { error: 'Quiz JSON parsed but no valid items found. Ensure 4 options with one correct answer.' };
         return { questions, totalQuestions: questions.length, schema_version: 'quiz_mcq_v1' };
       }
       return { error: 'Quiz must be valid JSON (quiz_mcq_v1). Please paste only the JSON block.' };
@@ -1160,42 +1237,55 @@ class StudyBuddyApp {
     const container = document.getElementById('parsed-content');
     if (!container) return;
 
-    if (content?.schema_version === 'md_v1') {
-      container.innerHTML = this.renderMarkdown(content.markdown || '');
+    // Handle Markdown content
+    if (content?.schema_version === 'md_v1' || typeof content?.markdown === 'string' || (typeof content === 'string' && content.trim())) {
+      const mdText = content.markdown || (typeof content === 'string' ? content : '');
+      container.innerHTML = this.renderMarkdown(mdText);
       return;
     }
 
-    if (type === 'quiz' && content?.questions) {
+    // Handle Quiz preview
+    if (type === 'quiz' && (content?.questions || content?.items)) {
+      const questions = content.questions || content.items || [];
+      const total = content.totalQuestions || questions.length;
       container.innerHTML = `
-        <div class="bg-purple-50 dark:bg-purple-900/20 p-4 rounded-lg mb-4">
+        <div class="bg-purple-50 dark:bg-purple-900/20 p-4 rounded-lg mb-4 border border-purple-200 dark:border-purple-800/40">
           <h3 class="font-semibold text-purple-800 dark:text-purple-300 mb-1">Quiz Overview</h3>
-          <p class="text-sm text-purple-600 dark:text-purple-400">Total Questions: ${content.totalQuestions || content.questions.length}</p>
+          <p class="text-sm text-purple-600 dark:text-purple-400">Total Questions: ${total}</p>
         </div>
         <div class="space-y-3">
-          ${content.questions.slice(0, 3).map((q, i) => `
-            <div class="bg-gray-50 dark:bg-gray-800 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
-              <p class="font-medium text-gray-800 dark:text-gray-100 mb-2">${i + 1}. ${escapeHtml(q.text)}</p>
-              <div class="text-sm text-gray-700 dark:text-gray-300 space-y-1">
-                ${q.options.map((opt, j) => `
-                  <div class="flex items-center space-x-2">
-                    <span class="${j === q.correctAnswer ? 'text-green-600 dark:text-green-400 font-medium' : ''}">${String.fromCharCode(65 + j)}) ${escapeHtml(opt)}</span>
-                    ${j === q.correctAnswer ? '<span class="text-green-600 dark:text-green-400 font-bold">✓</span>' : ''}
-                  </div>
-                `).join('')}
+          ${questions.slice(0, 3).map((q, i) => {
+            const opts = q.options?.map(o => typeof o === 'object' && o !== null ? (o.text || '') : String(o)) || [];
+            let corr = q.correctAnswer;
+            if (typeof corr !== 'number' && Array.isArray(q.options)) {
+              corr = q.options.findIndex(o => typeof o === 'object' && o !== null && o.isCorrect === true);
+            }
+            return `
+              <div class="bg-gray-50 dark:bg-gray-800 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
+                <p class="font-medium text-gray-800 dark:text-gray-100 mb-2">${i + 1}. ${escapeHtml(q.text || q.stem)}</p>
+                <div class="text-sm text-gray-700 dark:text-gray-300 space-y-1">
+                  ${opts.map((opt, j) => `
+                    <div class="flex items-center space-x-2">
+                      <span class="${j === corr ? 'text-green-600 dark:text-green-400 font-medium' : ''}">${String.fromCharCode(65 + j)}) ${escapeHtml(opt)}</span>
+                      ${j === corr ? '<span class="text-green-600 dark:text-green-400 font-bold">✓</span>' : ''}
+                    </div>
+                  `).join('')}
+                </div>
               </div>
-            </div>
-          `).join('')}
-          ${content.questions.length > 3 ? `<p class="text-sm text-gray-500 text-center">... and ${content.questions.length - 3} more questions</p>` : ''}
+            `;
+          }).join('')}
+          ${questions.length > 3 ? `<p class="text-sm text-gray-500 text-center">... and ${questions.length - 3} more questions</p>` : ''}
         </div>
       `;
       return;
     }
 
+    // Handle Flashcards preview
     if (content?.cards) {
       const total = content.totalCards || content.cards.length;
       const currentTopicId = this.data.currentTopic?.id || '';
       container.innerHTML = `
-        <div class="bg-green-50 dark:bg-green-900/20 p-4 rounded-lg mb-4">
+        <div class="bg-green-50 dark:bg-green-900/20 p-4 rounded-lg mb-4 border border-green-200 dark:border-green-800/40">
           <div class="flex items-center justify-between">
             <div>
               <h3 class="font-semibold text-green-800 dark:text-green-300 mb-1">Flashcards</h3>
@@ -1204,7 +1294,7 @@ class StudyBuddyApp {
             <button type="button"
                     data-start-flashcards
                     data-topic-id="${currentTopicId}"
-                    class="px-3.5 py-2 bg-primary-500 text-white font-medium rounded-lg hover:bg-primary-600 shadow-sm transition-colors">
+                    class="px-3.5 py-2 bg-primary-500 text-white font-medium rounded-lg hover:bg-primary-600 shadow-sm transition-colors text-xs">
               Study Now
             </button>
           </div>
@@ -1228,7 +1318,9 @@ class StudyBuddyApp {
       return;
     }
 
-    container.innerHTML = `<div class="text-gray-700 dark:text-gray-300 whitespace-pre-wrap">${escapeHtml(content?.markdown || content?.content || '')}</div>`;
+    // Generic fallback
+    const rawVal = content?.markdown || content?.content || (typeof content === 'object' ? JSON.stringify(content, null, 2) : String(content || ''));
+    container.innerHTML = `<div class="text-gray-700 dark:text-gray-300 whitespace-pre-wrap font-mono text-xs">${escapeHtml(rawVal)}</div>`;
   }
 
   cancelContentEdit() {
@@ -1345,9 +1437,24 @@ class StudyBuddyApp {
       this._flash.showBack = false;
       this._renderFlashcard();
     } else {
+      // Mark topic flashcards as completed when session completes
+      const courseIdx = this.data.courses.findIndex(c => c.id === this.data.currentCourse?.id);
+      if (courseIdx >= 0) {
+        const tIdx = this.data.courses[courseIdx].topics.findIndex(t => t.id === this._flash.topicId);
+        if (tIdx >= 0) {
+          const fcSlot = this.data.courses[courseIdx].topics[tIdx].contentSlots?.flashcards;
+          if (fcSlot) {
+            fcSlot.completed = true;
+            fcSlot.lastUpdated = new Date().toISOString();
+          }
+        }
+      }
       this.showToast('Session complete 🎉', 'success');
       this.recordActivity();
       this.closeFlashcardsStudy();
+      if (this.data.currentView === 'topic-detail') {
+        this.loadTopicDetail({ topicId: this.data.currentTopic?.id });
+      }
     }
   }
 
@@ -1468,18 +1575,9 @@ class StudyBuddyApp {
     document.getElementById('flash-grade-easy')?.addEventListener('click', () => this._gradeFlashcard(5));
   }
 
-  _today() {
-    return new Date().toISOString().slice(0, 10);
-  }
-  _addDays(n) {
-    const d = new Date();
-    d.setDate(d.getDate() + n);
-    return d.toISOString().slice(0, 10);
-  }
-
   // Quiz Engine
   loadQuizView(data) {
-    const topicId = data?.topicId;
+    const topicId = data?.topicId || this.data.currentTopic?.id;
     const topic = this.findTopicById(this.data.currentCourse, topicId);
     if (!topic) {
       this.showToast('Topic not found', 'error');
@@ -1494,8 +1592,29 @@ class StudyBuddyApp {
       return;
     }
 
-    const questions = (slot.content.questions || slot.content.items || [])
-      .filter(q => (q.options?.length === 4) && (typeof q.correctAnswer === 'number' || q.options.some(o => o?.isCorrect)));
+    const rawQuestions = slot.content.questions || slot.content.items || [];
+    const questions = rawQuestions.map((q, idx) => {
+      const opts = Array.isArray(q.options)
+        ? q.options.map(o => typeof o === 'object' && o !== null ? (o.text || '') : String(o))
+        : [];
+      let correct = q.correctAnswer;
+      if (typeof correct !== 'number' && Array.isArray(q.options)) {
+        correct = q.options.findIndex(o => typeof o === 'object' && o !== null && o.isCorrect === true);
+      }
+      const fb = q.feedback || {};
+      if (Array.isArray(q.options)) {
+        q.options.forEach((o, i) => {
+          if (typeof o === 'object' && o !== null && o.feedback) fb[i] = o.feedback;
+        });
+      }
+      return {
+        id: q.id || idx + 1,
+        text: q.text || q.stem || '',
+        options: opts,
+        correctAnswer: typeof correct === 'number' && correct >= 0 ? correct : 0,
+        feedback: fb
+      };
+    }).filter(q => q.options.length === 4);
 
     if (!questions.length) {
       this.showToast('No valid 4-option questions in quiz', 'error');
@@ -1555,7 +1674,7 @@ class StudyBuddyApp {
 
     const optionsContainer = document.getElementById('question-options');
     optionsContainer.innerHTML = q.options.map((opt, idx) => `
-      <label class="flex items-center space-x-3 p-3 border border-gray-200 dark:border-gray-700 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+      <label class="flex items-center space-x-3 p-3 border border-gray-200 dark:border-gray-700 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors">
         <input type="radio" name="quiz-option" value="${idx}" class="text-primary-500 focus:ring-primary-500">
         <span class="flex-1 text-gray-800 dark:text-gray-200">${escapeHtml(opt)}</span>
       </label>
@@ -1604,13 +1723,12 @@ class StudyBuddyApp {
     optionsContainer.querySelectorAll('input').forEach(i => i.disabled = true);
     optionsContainer.querySelectorAll('label').forEach((label, idx) => {
       if (idx === q.correctAnswer) {
-        label.classList.add('bg-green-100', 'border-green-300', 'dark:bg-green-900/30', 'dark:border-green-700');
+        label.classList.add('bg-green-100', 'border-green-300', 'dark:bg-green-900/40', 'dark:border-green-700');
       } else if (idx === answerIndex && !isCorrect) {
-        label.classList.add('bg-red-100', 'border-red-300', 'dark:bg-red-900/30', 'dark:border-red-700');
+        label.classList.add('bg-red-100', 'border-red-300', 'dark:bg-red-900/40', 'dark:border-red-700');
       }
     });
 
-    // Remove existing before showing
     document.querySelector('#quiz-question .quiz-feedback')?.remove();
     this.showQuizFeedback(isCorrect, q, answerIndex);
 
@@ -1628,7 +1746,7 @@ class StudyBuddyApp {
 
     const div = document.createElement('div');
     div.className = `quiz-feedback mt-4 p-3 rounded-lg ${
-      isCorrect ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800' : 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800'
+      isCorrect ? 'bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800' : 'bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800'
     }`;
     div.innerHTML = `
       <div class="flex items-center space-x-2 mb-1">
@@ -1766,7 +1884,7 @@ class StudyBuddyApp {
         <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-4 rounded-lg mb-3">
           <div class="flex items-start justify-between mb-2">
             <p class="font-medium text-gray-800 dark:text-gray-100">${i + 1}. ${escapeHtml(q.text)}</p>
-            <span class="text-xs px-2 py-0.5 rounded ${isCorrect ? 'bg-green-100 text-green-700 dark:bg-green-900/30' : 'bg-red-100 text-red-700 dark:bg-red-900/30'}">
+            <span class="text-xs px-2 py-0.5 rounded ${isCorrect ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'}">
               ${isCorrect ? 'Correct' : 'Missed'}
             </span>
           </div>
@@ -1802,14 +1920,15 @@ class StudyBuddyApp {
     return `You are an expert academic analyzer. Create a topic structure for the chapter/course below using EXACT markers only. NO extra commentary or text outside these markers.
 
 Required markers:
-## COURSE_STRUCTURE_START: [Course or Chapter Name]
-### TOPIC_START: [Topic Name] ## DIFFICULTY: [Beginner/Intermediate/Advanced] ## CATEGORY: [Category]
-#### SUBTOPIC: [Subtopic Name] ## CONCEPTS: [Concept 1, Concept 2, Concept 3]
+## COURSE_STRUCTURE_START: Course or Chapter Name
+### TOPIC_START: Topic Name ## DIFFICULTY: Beginner/Intermediate/Advanced ## CATEGORY: Category
+#### SUBTOPIC: Subtopic Name ## CONCEPTS: Concept 1, Concept 2, Concept 3
 ### TOPIC_END
 ## COURSE_STRUCTURE_END
 
 Rules:
 - Use the exact markers and casing shown.
+- Do NOT wrap values in square brackets [].
 - Include ALL major topics and key subtopics.
 - Keep it comprehensive and logically ordered.`;
   }
@@ -1817,7 +1936,7 @@ Rules:
   getContentPrompt(type, topic) {
     const p = this.data.settings.personalization || this._getDefaultPrefs();
     const courseName = this.data.currentCourse?.name || 'Course';
-    const topicName = topic?.name || '[TOPIC NAME]';
+    const topicName = topic?.name || 'Selected Topic';
     const personalize = `Personalization: depth=${p.depth}, examples=${p.examples}, rigor=${p.rigor}, target_read_time=${p.readTime}min, audience_difficulty=${p.difficulty || 'Intermediate'}, citation=${p.citation || 'minimal'}`;
 
     const hasSubs = Array.isArray(topic?.subtopics) && topic.subtopics.length > 0;
@@ -1940,31 +2059,53 @@ Wrap in \`\`\`markdown. Structure: Topic Mastery Checklist, Quick Reference Shee
     }
   }
 
-  // Study View
+  // Study View (Smart Queue)
   loadStudyView() {
     const queueEl = document.getElementById('study-queue');
     if (!queueEl) return;
 
+    const today = this._today();
     const items = [];
+
     for (const course of this.data.courses) {
       for (const topic of course.topics || []) {
+        // 1. Spaced Repetition reviews due
+        const fcSlot = topic.contentSlots?.flashcards;
+        if (fcSlot?.status === 'filled' && fcSlot?.content?.cards?.length) {
+          const srs = fcSlot.srs?.cards || {};
+          const hasDue = fcSlot.content.cards.some(c => {
+            const st = srs[c.id];
+            return !st || !st.due || st.due <= today;
+          });
+
+          if (hasDue || !fcSlot.completed) {
+            items.push({
+              kind: 'review',
+              priority: 1,
+              label: `${course.name} • ${topic.name} • Flashcards Review`,
+              go: () => {
+                this.data.currentCourse = course;
+                this.data.currentTopic = topic;
+                this.openFlashcardsStudy(topic.id);
+              }
+            });
+          }
+        }
+
+        // 2. Pending content generations
         for (const [type, slot] of Object.entries(topic.contentSlots || {})) {
           if (slot.status === 'empty') {
             items.push({
               kind: 'content',
               priority: 2,
-              label: `${topic.name} • ${this.capitalize(type)}`,
-              go: () => { this.data.currentCourse = course; this.showView('content', { type, topicId: topic.id }); }
+              label: `${course.name} • ${topic.name} • ${this.capitalize(type)}`,
+              go: () => {
+                this.data.currentCourse = course;
+                this.data.currentTopic = topic;
+                this.showView('content', { type, topicId: topic.id });
+              }
             });
           }
-        }
-        if (topic.contentSlots?.flashcards?.status === 'filled' && !topic.contentSlots.flashcards.completed) {
-          items.push({
-            kind: 'review',
-            priority: 1,
-            label: `${topic.name} • Flashcards Review`,
-            go: () => { this.data.currentCourse = course; this.openFlashcardsStudy(topic.id); }
-          });
         }
       }
     }
@@ -2014,7 +2155,7 @@ Wrap in \`\`\`markdown. Structure: Topic Mastery Checklist, Quick Reference Shee
     toast.innerHTML = `<span>${type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : 'ℹ️'}</span><span class="font-medium">${escapeHtml(message)}</span>`;
 
     const container = document.getElementById('toast-container');
-    container.appendChild(toast);
+    if (container) container.appendChild(toast);
 
     requestAnimationFrame(() => {
       toast.classList.remove('translate-y-2', 'opacity-0');
