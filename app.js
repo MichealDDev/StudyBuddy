@@ -564,41 +564,63 @@ class StudyBuddyApp {
   // Text-To-Speech Reader
   toggleTTS() {
     if (!('speechSynthesis' in window)) {
-      this.showToast('Text-to-speech is not supported on this browser', 'error');
+      this.showToast('Text-to-speech is not supported on this browser', 'warning');
       return;
     }
 
-    const ttsBtn = document.getElementById('tts-listen-btn');
-    const ttsText = document.getElementById('tts-text');
+    const resetUI = () => {
+      this.ttsSpeaking = false;
+      const icon = document.getElementById('tts-icon');
+      const text = document.getElementById('tts-text');
+      if (icon) icon.textContent = '🔊';
+      if (text) text.textContent = 'Listen';
+    };
 
-    if (window.speechSynthesis.speaking) {
+    if (this.ttsSpeaking || window.speechSynthesis.speaking) {
       window.speechSynthesis.cancel();
-      if (ttsText) ttsText.textContent = 'Listen';
-      ttsBtn?.classList.remove('bg-rose-100', 'text-rose-700', 'dark:bg-rose-950/40', 'dark:text-rose-300');
+      resetUI();
       return;
     }
 
-    const contentDiv = document.getElementById('parsed-content');
-    if (!contentDiv || !contentDiv.textContent.trim()) {
-      this.showToast('No readable content available', 'info');
+    const parsedEl = document.getElementById('parsed-content');
+    const textToRead = parsedEl ? parsedEl.innerText : '';
+    if (!textToRead.trim()) {
+      this.showToast('No content available to read aloud', 'warning');
       return;
     }
 
-    const utterance = new SpeechSynthesisUtterance(contentDiv.textContent);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
+    try {
+      const utterance = new SpeechSynthesisUtterance(textToRead.slice(0, 4000));
+      utterance.rate = 1.0;
+      utterance.onend = () => {
+        resetUI();
+      };
+      utterance.onerror = (e) => {
+        resetUI();
+        console.warn('SpeechSynthesis error:', e);
+        if (navigator.userAgent.includes('Firefox')) {
+          this.showToast('Firefox Voice: Linux Speech Dispatcher is missing/broken on your OS. Install speech-dispatcher or use Chromium/Edge.', 'error');
+        } else {
+          this.showToast('Speech audio error occurred.', 'error');
+        }
+      };
 
-    utterance.onstart = () => {
-      if (ttsText) ttsText.textContent = 'Stop';
-      ttsBtn?.classList.add('bg-rose-100', 'text-rose-700', 'dark:bg-rose-950/40', 'dark:text-rose-300');
-    };
-
-    utterance.onend = utterance.onerror = () => {
-      if (ttsText) ttsText.textContent = 'Listen';
-      ttsBtn?.classList.remove('bg-rose-100', 'text-rose-700', 'dark:bg-rose-950/40', 'dark:text-rose-300');
-    };
-
-    window.speechSynthesis.speak(utterance);
+      window.speechSynthesis.speak(utterance);
+      this.ttsSpeaking = true;
+      const icon = document.getElementById('tts-icon');
+      const text = document.getElementById('tts-text');
+      if (icon) icon.textContent = '⏸';
+      if (text) text.textContent = 'Pause';
+      this.showToast('Reading content aloud...', 'info');
+    } catch (err) {
+      resetUI();
+      console.warn('SpeechSynthesis exception:', err);
+      if (navigator.userAgent.includes('Firefox')) {
+        this.showToast('Firefox Speech Dispatcher error: Try Chrome/Edge or install speech-dispatcher.', 'error');
+      } else {
+        this.showToast('Speech synthesis failed: ' + err.message, 'error');
+      }
+    }
   }
 
   // Pomodoro Focus Hub
@@ -1858,114 +1880,69 @@ class StudyBuddyApp {
     }, 1000);
   }
 
-  displayQuizQuestion() {
-    const q = this.currentQuiz.questions[this.currentQuiz.currentIndex];
-    if (!q) return;
+ displayQuizQuestion() {
+    const q = this.currentQuiz.questions[this.currentQuiz.currentQuestion];
+    const n = this.currentQuiz.currentQuestion + 1;
+    const total = this.currentQuiz.questions.length;
 
-    this.currentQuiz.locked = false;
-
+    document.getElementById('quiz-question-number').textContent = `Question ${n} of ${total}`;
     const questionTextEl = document.getElementById('question-text');
+    questionTextEl.textContent = q.text || q.question || '';
+    this.renderMath(questionTextEl);
+
     const optionsContainer = document.getElementById('question-options');
+    optionsContainer.innerHTML = (q.options || []).map((opt, idx) => `
+      <label class="flex items-center space-x-3 p-3.5 border border-slate-200 dark:border-slate-800 rounded-xl cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/80 transition-colors">
+        <input type="radio" name="quiz-option" value="${idx}" class="text-primary-600 focus:ring-primary-500">
+        <span class="flex-1 text-slate-800 dark:text-slate-200 text-xs font-medium">${escapeHtml(opt)}</span>
+      </label>
+    `).join('');
+    this.renderMath(optionsContainer);
+
+    // Completely clear prior question feedback pills
+    document.querySelectorAll('#quiz-question .quiz-feedback, .quiz-feedback, #quiz-feedback-box').forEach(el => el.remove());
+
+    const answered = this.currentQuiz.answers[this.currentQuiz.currentQuestion];
+    const prevBtn = document.getElementById('quiz-prev-btn');
     const submitBtn = document.getElementById('quiz-submit-btn');
     const nextBtn = document.getElementById('quiz-next-btn');
 
-    if (questionTextEl) questionTextEl.textContent = q.question;
-    if (submitBtn) {
-      submitBtn.style.display = 'inline-block';
-      submitBtn.disabled = true;
-    }
-    if (nextBtn) nextBtn.style.display = 'none';
+    prevBtn.disabled = this.currentQuiz.currentQuestion === 0;
 
-    // Existing answer for back navigation
-    const prevAnswer = this.currentQuiz.userAnswers[this.currentQuiz.currentIndex];
-
-    if (optionsContainer) {
-      optionsContainer.innerHTML = (q.options || []).map((opt, i) => {
-        const isChecked = prevAnswer === i ? 'checked' : '';
-        return `
-          <label class="quiz-option-label flex items-center p-3 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-primary-500 hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer transition text-xs font-semibold" data-index="${i}">
-            <input type="radio" name="quiz-option" value="${i}" ${isChecked} class="mr-3 text-primary-600 focus:ring-primary-500" />
-            <span class="text-slate-800 dark:text-slate-200">${escapeHtml(opt)}</span>
-          </label>
-        `;
-      }).join('');
-
-      // Enable submit when radio selected
-      optionsContainer.querySelectorAll('input[type="radio"]').forEach(r => {
-        r.addEventListener('change', () => {
-          if (submitBtn) submitBtn.disabled = false;
-        });
-      });
-    }
-
-    if (prevAnswer !== null && prevAnswer !== undefined) {
-      this.lockAndShowFeedback(prevAnswer);
-    }
-  }
-
-  submitQuizAnswer() {
-    if (this.currentQuiz.locked) return;
-
-    const selected = document.querySelector('input[name="quiz-option"]:checked');
-    if (!selected) {
-      this.showToast('Please select an option first!', 'info');
-      return;
-    }
-
-    const answerIndex = parseInt(selected.value, 10);
-    this.currentQuiz.userAnswers[this.currentQuiz.currentIndex] = answerIndex;
-    this.lockAndShowFeedback(answerIndex);
-    this.updateQuizProgress();
-  }
-
-  lockAndShowFeedback(answerIndex) {
-    this.currentQuiz.locked = true;
-
-    const q = this.currentQuiz.questions[this.currentQuiz.currentIndex];
-    const isCorrect = answerIndex === q.correctAnswer;
-
-    // Play chime sound
-    playSoundChime(isCorrect ? 'success' : 'wrong');
-
-    // Visual feedback
-    this.showQuizFeedback(isCorrect, q, answerIndex);
-
-    // Toggle button to next
-    const submitBtn = document.getElementById('quiz-submit-btn');
-    const nextBtn = document.getElementById('quiz-next-btn');
-
-    if (submitBtn) submitBtn.style.display = 'none';
-    if (nextBtn) {
-      nextBtn.style.display = 'inline-block';
-      const isLast = this.currentQuiz.currentIndex === this.currentQuiz.questions.length - 1;
-      nextBtn.textContent = isLast ? 'Finish Quiz 🎉' : 'Next Question ➔';
+    if (answered !== null) {
+      const radio = optionsContainer.querySelector(`input[value="${answered}"]`);
+      if (radio) radio.checked = true;
+      this.lockAndShowFeedback(answered);
+    } else {
+      submitBtn.style.display = 'block';
+      nextBtn.style.display = 'none';
     }
   }
 
   showQuizFeedback(isCorrect, question, selectedIndex) {
-    const labels = document.querySelectorAll('.quiz-option-label');
-    labels.forEach((label, idx) => {
-      const radio = label.querySelector('input');
-      if (radio) radio.disabled = true;
+    // Clear any existing explanation box first
+    document.querySelectorAll('#quiz-question .quiz-feedback, .quiz-feedback, #quiz-feedback-box').forEach(el => el.remove());
 
-      if (idx === question.correctAnswer) {
-        label.classList.add('bg-emerald-50', 'border-emerald-500', 'text-emerald-800', 'dark:bg-emerald-950/40', 'dark:text-emerald-200');
-      } else if (idx === selectedIndex && !isCorrect) {
-        label.classList.add('bg-red-50', 'border-red-500', 'text-red-800', 'dark:bg-red-950/40', 'dark:text-red-200');
-      } else {
-        label.classList.add('opacity-50');
-      }
-    });
+    const feedback = question.explanation || question.feedback?.[selectedIndex] || '';
+    const correctOpt = question.options[question.correctAnswer];
 
-    if (question.explanation) {
-      const card = document.getElementById('quiz-question');
-      const note = document.createElement('div');
-      note.className = 'mt-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800 text-xs text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 italic';
-      note.textContent = `💡 Explanation: ${question.explanation}`;
-      card?.appendChild(note);
-    }
+    const div = document.createElement('div');
+    div.id = 'quiz-feedback-box';
+    div.className = `quiz-feedback mt-3 p-3.5 rounded-2xl border text-xs space-y-1.5 ${
+      isCorrect ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800' : 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800'
+    }`;
+    div.innerHTML = `
+      <div class="flex items-center space-x-1.5 mb-1">
+        <span class="${isCorrect ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'} font-bold text-xs">
+          ${isCorrect ? '✅ Correct!' : '❌ Incorrect'}
+        </span>
+      </div>
+      ${!isCorrect ? `<p class="text-xs font-bold text-slate-800 dark:text-slate-200 mt-1 mb-1">Correct answer: ${escapeHtml(correctOpt)}</p>` : ''}
+      ${feedback ? `<div class="mt-1 pt-1.5 border-t border-slate-200/60 dark:border-slate-700/60 text-slate-700 dark:text-slate-300 font-medium leading-relaxed">💡 <b>Explanation:</b> ${escapeHtml(feedback)}</div>` : ''}
+    `;
+    document.getElementById('quiz-question').appendChild(div);
+    this.renderMath(div);
   }
-
   handleQuizNextOrFinish() {
     if (this.currentQuiz.currentIndex < this.currentQuiz.questions.length - 1) {
       this.nextQuizQuestion();
