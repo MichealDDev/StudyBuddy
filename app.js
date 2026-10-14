@@ -622,6 +622,15 @@ class StudyBuddyApp {
       }
     }
   }
+  // Quiz Event Listeners
+  setupQuizEventListeners() {
+    document.getElementById('quiz-submit-btn')?.addEventListener('click', () => this.submitQuizAnswer());
+    document.getElementById('quiz-next-btn')?.addEventListener('click', () => this.handleQuizNextOrFinish());
+    document.getElementById('quiz-prev-btn')?.addEventListener('click', () => this.prevQuizQuestion());
+    document.getElementById('retake-quiz-btn')?.addEventListener('click', () => this.retakeQuiz());
+    document.getElementById('quiz-review-btn')?.addEventListener('click', () => this.reviewQuizAnswers());
+    document.getElementById('review-back-to-results-btn')?.addEventListener('click', () => this.backToQuizResults());
+  }
 
   // Pomodoro Focus Hub
   setupPomodoroListeners() {
@@ -1771,7 +1780,7 @@ class StudyBuddyApp {
       else if (e.key === '4') this._gradeFlashcard(4);
     });
 
-    document.getElementById('flashcard-card-inner')?.addEventListener('click', () => this._flipFlashcard());
+document.getElementById('flashcard-card-inner')?.addEventListener('click', () => this._flipFlashcard());
     document.getElementById('flash-close-btn')?.addEventListener('click', () => this.closeFlashcardsStudy());
     document.getElementById('flash-flip-btn')?.addEventListener('click', () => this._flipFlashcard());
     document.getElementById('flash-next-btn')?.addEventListener('click', () => this._nextFlashcard());
@@ -1781,75 +1790,84 @@ class StudyBuddyApp {
     document.getElementById('flash-grade-hard')?.addEventListener('click', () => this._gradeFlashcard(2));
     document.getElementById('flash-grade-good')?.addEventListener('click', () => this._gradeFlashcard(3));
     document.getElementById('flash-grade-easy')?.addEventListener('click', () => this._gradeFlashcard(4));
-
-    document.getElementById('flash-tts-btn')?.addEventListener('click', () => {
-      if (!('speechSynthesis' in window) || !this._flash) return;
-      const card = this._flash.deck[this._flash.index];
-      const text = this._flash.flipped ? (card.back || card.answer) : (card.front || card.question);
-      if (text) {
-        window.speechSynthesis.cancel();
-        const u = new SpeechSynthesisUtterance(text);
-        window.speechSynthesis.speak(u);
-      }
-    });
   }
 
   // Quiz Engine
   loadQuizView(data) {
     const topicId = data?.topicId || this.data.currentTopic?.id;
-    const course = this.data.currentCourse;
-
-    if (!course || !topicId) {
-      this.showView('courses');
-      return;
-    }
-
-    const topic = this.findTopicById(course, topicId);
+    const topic = this.findTopicById(this.data.currentCourse, topicId);
     if (!topic) {
-      this.showView('course-detail', { courseId: course.id });
+      this.showToast('Topic not found', 'error');
+      this.goBack();
       return;
     }
-
     this.data.currentTopic = topic;
     const slot = topic.contentSlots?.quiz;
-
     if (!slot || !slot.content) {
-      this.showToast('Please generate or paste a quiz first!', 'error');
-      this.showView('content', { type: 'quiz', topicId: topic.id });
+      this.showToast('No quiz available. Please create or generate quiz content first.', 'error');
+      this.goBack();
       return;
     }
 
-    const quizData = slot.content;
-    const questions = quizData.questions || (Array.isArray(quizData) ? quizData : []);
+    const rawQuestions = Array.isArray(slot.content)
+      ? slot.content
+      : (slot.content.questions || slot.content.items || []);
 
-    if (questions.length === 0) {
-      this.showToast('No quiz questions found in stored data.', 'error');
-      this.showView('content', { type: 'quiz', topicId: topic.id });
+    const questions = rawQuestions.map((q, idx) => {
+      let opts = [];
+      if (Array.isArray(q.options)) {
+        opts = q.options.map(o => typeof o === 'object' && o !== null ? (o.text || '') : String(o));
+      }
+
+      let correct = q.correctAnswer !== undefined ? q.correctAnswer : (q.answer !== undefined ? q.answer : q.correct);
+      if (typeof correct !== 'number' && typeof correct !== 'string' && Array.isArray(q.options)) {
+        correct = q.options.findIndex(o => typeof o === 'object' && o !== null && (o.isCorrect === true || o.correct === true));
+      }
+
+      if (typeof correct === 'string') {
+        const letter = correct.trim().toLowerCase()[0];
+        const letterMap = { a: 0, b: 1, c: 2, d: 3, e: 4 };
+        if (letter in letterMap) {
+          correct = letterMap[letter];
+        } else {
+          const parsed = parseInt(correct, 10);
+          correct = isNaN(parsed) ? 0 : parsed;
+        }
+      }
+
+      return {
+        id: q.id || idx + 1,
+        text: q.question || q.text || q.stem || `Question ${idx + 1}`,
+        options: opts,
+        correctAnswer: (typeof correct === 'number' && correct >= 0 && correct < opts.length) ? correct : 0,
+        explanation: q.explanation || q.rationale || (typeof q.feedback === 'string' ? q.feedback : '') || ''
+      };
+    }).filter(q => q.options.length >= 2);
+
+    if (!questions.length) {
+      this.showToast('No valid questions found in quiz data. Please edit or regenerate quiz.', 'error');
+      this.goBack();
       return;
     }
 
-    // Initialize Quiz state
     this.currentQuiz = {
-      questions: questions,
-      currentIndex: 0,
-      userAnswers: new Array(questions.length).fill(null),
+      questions,
+      currentQuestion: 0,
       answers: new Array(questions.length).fill(null),
-      score: 0,
-      timer: null,
-      seconds: 0,
       startTime: Date.now(),
-      locked: false,
-      isReviewMode: false
+      timer: null
     };
 
-    // Reset views
+    document.querySelectorAll('#quiz-question .quiz-feedback, .quiz-feedback, #quiz-feedback-box').forEach(el => el.remove());
+
+    const titleEl = document.getElementById('quiz-title');
+    if (titleEl) titleEl.textContent = `${topic.name} Quiz`;
+
     document.getElementById('quiz-results')?.classList.add('hidden');
     document.getElementById('quiz-review-card')?.classList.add('hidden');
     document.getElementById('quiz-question-card')?.classList.remove('hidden');
-    document.getElementById('quiz-controls')?.classList.remove('hidden');
-
-    const titleEl = document.getElementById('quiz-title');
-    if (titleEl) titleEl.textContent = topic.name;
+    const controls = document.getElementById('quiz-controls');
+    if (controls) controls.style.display = 'flex';
 
     this.startQuiz();
   }
@@ -1871,11 +1889,11 @@ class StudyBuddyApp {
     this.stopQuizTimer();
     const timerEl = document.getElementById('quiz-timer');
     this.currentQuiz.timer = setInterval(() => {
-      this.currentQuiz.seconds++;
-      const mins = Math.floor(this.currentQuiz.seconds / 60);
-      const secs = this.currentQuiz.seconds % 60;
+      const elapsed = Math.floor((Date.now() - (this.currentQuiz?.startTime || Date.now())) / 1000);
+      const mm = Math.floor(elapsed / 60);
+      const ss = (elapsed % 60).toString().padStart(2, '0');
       if (timerEl) {
-        timerEl.textContent = `⏱️ ${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+        timerEl.textContent = `⏱️ ${mm}:${ss}`;
       }
     }, 1000);
   }
@@ -1970,17 +1988,55 @@ class StudyBuddyApp {
   finishQuiz() {
     this.stopQuizTimer();
 
-    let score = 0;
-    this.currentQuiz.questions.forEach((q, i) => {
-      if (this.currentQuiz.userAnswers[i] === q.correctAnswer) {
-        score++;
-      }
-    });
-    this.currentQuiz.score = score;
-
-    const timeSpent = Math.round((Date.now() - this.currentQuiz.startTime) / 1000);
     const total = this.currentQuiz.questions.length;
-    const pct = Math.round((score / total) * 100);
+    let score = 0;
+    this.currentQuiz.answers.forEach((ans, idx) => {
+      if (ans !== null && ans === this.currentQuiz.questions[idx].correctAnswer) score++;
+    });
+    const percentage = total > 0 ? Math.round((score / total) * 100) : 0;
+    const timeSpent = Math.round((Date.now() - this.currentQuiz.startTime) / 1000);
+
+    const topic = this.data.currentTopic;
+    const courseIndex = this.data.courses.findIndex(c => c.id === this.data.currentCourse?.id);
+    const topicIndex = courseIndex >= 0 ? this.data.courses[courseIndex].topics.findIndex(t => t.id === topic?.id) : -1;
+    const slot = (courseIndex >= 0 && topicIndex >= 0) ? this.data.courses[courseIndex].topics[topicIndex].contentSlots?.quiz : topic?.contentSlots?.quiz;
+
+    if (slot) {
+      const attempt = {
+        score,
+        total,
+        percentage,
+        timeSpent,
+        date: new Date().toISOString(),
+        answers: this.currentQuiz.answers.slice()
+      };
+
+      slot.attempts = slot.attempts || [];
+      slot.attempts.push(attempt);
+      slot.bestScore = Math.max(slot.bestScore || 0, percentage);
+
+      if (slot.bestScore >= this.quizMasteryThreshold) {
+        slot.completed = true;
+      }
+
+      slot.lastUpdated = new Date().toISOString();
+      this.recordActivity();
+      this.saveData(false);
+    }
+
+    const mm = Math.floor(timeSpent / 60);
+    const ss = (timeSpent % 60).toString().padStart(2, '0');
+
+    document.getElementById('final-score').textContent = `${score}/${total} (${percentage}%)`;
+    document.getElementById('score-breakdown').textContent = `Completed in ${mm}m ${ss}s • Mastery: ${percentage >= this.quizMasteryThreshold ? 'Achieved 🏆' : 'Needs Practice'}`;
+
+    document.getElementById('quiz-results')?.classList.remove('hidden');
+    document.getElementById('quiz-question-card')?.classList.add('hidden');
+    const controls = document.getElementById('quiz-controls');
+    if (controls) controls.style.display = 'none';
+
+    playSoundChime('success');
+  }
 
     // Save state
     const topic = this.data.currentTopic;
